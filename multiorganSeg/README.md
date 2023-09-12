@@ -1,4 +1,4 @@
-# Renal Substructure segmentation
+# Multi-organ segmentation (BTCV)
 
 ## Prepare Training Data
 ---
