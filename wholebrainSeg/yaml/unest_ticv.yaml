@@ -1,0 +1,31 @@
+{
+  'logdir': '', # Working directory for the experiment
+  'data_dir': '', # Path for the data
+  'jsondir': '', # Path for the json files
+  'use_pretrained': '', # Path to the pretrained model
+  'fold': 0,
+  'num_classes': 133,
+  'pos_embedd': 'perceptron',
+  'num_steps': 50000,
+  'lr': 0.00001,
+  'decay': 0.00001,
+  'momentum': 0.9,
+  'batch_size': 1,
+  'warmup_steps': 0,
+  'loss_type': 'dice',
+  'model_type': 'unest',
+  'eval_num': 400,
+  'opt': 'adamw',
+  'lrdecay': True,
+  'conv_block': True,
+  'res_block': True,
+  'decoder': True,
+  'amp': False,
+  'roi_x': 96,
+  'roi_y': 96,
+  'roi_z': 96,
+  'sw_batch_size': 1,
+  'aug_type':{'flip': 0.01, 'rotate': 0.00, 'scale_intensity': 0.01, 'shif_intensity': 0.01},
+  'loss_weight_ticv': 0.8,
+  'loss_weight_pfv': 1,
+}

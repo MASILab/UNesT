@@ -1,0 +1,30 @@
+{
+  'logdir': '', # Working directory for the experiment
+  'datadir': '', # Path for the data
+  'jsonfile': '', # Path for the json file
+  'fold': 0,
+  'model_type': 'large',
+  'patch_size': 4,
+  'depth': [2, 2, 20],
+  'embed_dims': [192, 384, 768],
+  'num_heads': [6, 12, 24],
+  'num_classes': 14,
+  'pos_embedd': 'perceptron',
+  'num_steps': 50000,
+  'lr': 0.0001,
+  'decay': 0.00001,
+  'momentum': 0.9,
+  'batch_size': 1,
+  'warmup_steps': 0,
+  'loss_type': 'dice_ce',
+  'eval_num': 400,
+  'opt': 'adamw',
+  'lrdecay': True,
+  'conv_block': True,
+  'res_block': True,
+  'use_pretrained': False,
+  'roi_x': 96,
+  'roi_y': 96,
+  'roi_z': 96,
+  'sw_batch_size': 1,
+}
