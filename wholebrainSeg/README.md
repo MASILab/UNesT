@@ -1,4 +1,15 @@
 # Whole brain segmentation
+---
+
+<p align="center">
+<img src="fig/brain_vis.png" width=100% height=40% 
+class="center">
+</p>
+
+<p align="center">
+<img src="fig/vis_TICV.png" width=100% height=40% 
+class="center">
+</p>
 
 ## Prepare Training Data
 ---
