@@ -1,7 +1,7 @@
 # Whole brain segmentation
 ---
-
-<p align="center">
+132 brain regions and TICV/PFV segmentation. It has been implemented as a single Singularity.
+<!-- <p align="center">
 <img src="fig/brain_vis.png" width=100% height=40% 
 class="center">
 </p>
@@ -9,7 +9,54 @@ class="center">
 <p align="center">
 <img src="fig/vis_TICV.png" width=100% height=40% 
 class="center">
+</p> -->
+```diff
++ Please cite the following MedIA/SPIE paper, if you used the UNesT whole brain segmentation.
+```
+```
+@article{yu2023unest,
+  title={UNesT: local spatial representation learning with hierarchical transformer for efficient medical segmentation},
+  author={Yu, Xin and Yang, Qi and Zhou, Yinchi and Cai, Leon Y and Gao, Riqiang and Lee, Ho Hin and Li, Thomas and Bao, Shunxing and Xu, Zhoubing and Lasko, Thomas A and others},
+  journal={Medical Image Analysis},
+  pages={102939},
+  year={2023},
+  publisher={Elsevier}
+}
+
+@misc{yu2023enhancing,
+      title={Enhancing Hierarchical Transformers for Whole Brain Segmentation with Intracranial Measurements Integration}, 
+      author={Xin Yu and Yucheng Tang and Qi Yang and Ho Hin Lee and Shunxing Bao and Yuankai Huo and Bennett A. Landman},
+      year={2023},
+      eprint={2309.04071},
+      archivePrefix={arXiv},
+      primaryClass={eess.IV}
+}
+```
+
+## Singularity
+<p align="center">
+<img src="fig/workflow.png" width=100% height=40% 
+class="center">
 </p>
+
+Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/1ay53rh8wup56fsri3lsoehxufk0ivpj).
+### Command to run Singularity
+
+    singularity run -e --contain 
+    --home /path/to/inputs/directory/
+    -B /path/to/inputs/directory/:/INPUTS 
+    -B /path/to/working/directory/:/WORKING_DIR 
+    -B /path/to/output/directory/:/OUTPUTS 
+    -B /tmp:/tmp 
+    --nv
+    /path/to/wholebrain.sif 
+    [--ticv --w_skull --overlap 0.5 --device 1]
+
+* `--nv` only required when using GPU. 
+* Use `--device` to specify the GPU device. Default is 0.
+* When working with non-skull stripped data, ensure to include the `--w_skull` option. If the option is omitted, the input will be assumed to be skull stripped data
+* To enable TICV/PFV estimation, include the `--ticv` option. Omitting this option will result in an output containing only the segmentation of 132 brain regions.
+* `--overlap` represents the overlap rate in MONAI sliding window inference. Default is 0.7.
 
 ## Prepare Training Data
 ---
@@ -74,31 +121,6 @@ We convert the images in MNI space back to original space using [call_Run_Deep_b
 ---
 For developing publicly available segmentation tools, we introduce the MONAI Bundle module that supports building Python-based workflows via structured configurations[Whole Brain Segmentation MONAI Boundle](https://github.com/Project-MONAI/model-zoo/tree/dev/models/wholeBrainSeg_Large_UNEST_segmentation).
 
-
-## Citation
----
-If you find this repository useful, please consider citing the following papers:
-
-```
-@article{yu2023unest,
-  title={UNesT: local spatial representation learning with hierarchical transformer for efficient medical segmentation},
-  author={Yu, Xin and Yang, Qi and Zhou, Yinchi and Cai, Leon Y and Gao, Riqiang and Lee, Ho Hin and Li, Thomas and Bao, Shunxing and Xu, Zhoubing and Lasko, Thomas A and others},
-  journal={Medical Image Analysis},
-  pages={102939},
-  year={2023},
-  publisher={Elsevier}
-}
-
-@misc{yu2023enhancing,
-      title={Enhancing Hierarchical Transformers for Whole Brain Segmentation with Intracranial Measurements Integration}, 
-      author={Xin Yu and Yucheng Tang and Qi Yang and Ho Hin Lee and Shunxing Bao and Yuankai Huo and Bennett A. Landman},
-      year={2023},
-      eprint={2309.04071},
-      archivePrefix={arXiv},
-      primaryClass={eess.IV}
-}
-```
-
 ## Complete ROI of the whole brain segmentation
 ---
 133 brain structures are segmented.
@@ -140,3 +162,6 @@ If you find this repository useful, please consider citing the following papers:
 |  128 :  Left-TMP---temporal-pole  |  129 :  Right-TrIFG-triangular-part-of-the-IFG  |  130 :  Left-TrIFG-triangular-part-of-the-IFG  |  131 :  Right-TTG---transverse-temporal-gyrus  |
 |  132 :  Left-TTG---transverse-temporal-gyrus  |
 ---
+
+## Acknowledgement
+We leveraged certain aspects from [yuankaihuo/SLANTbrainSeg](https://github.com/MASILab/SLANTbrainSeg/tree/master) and [MASILab/PreQual](https://github.com/MASILab/PreQual).
