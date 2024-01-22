@@ -39,17 +39,17 @@ class="center">
 class="center">
 </p>
 
-Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/1ay53rh8wup56fsri3lsoehxufk0ivpj).
+Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/miwzjppm23etsybzsrqe515g3xnoeb3d).
 ### Command to run Singularity
 
     singularity run -e --contain 
-    --home /path/to/inputs/directory/
-    -B /path/to/inputs/directory/:/INPUTS 
-    -B /path/to/working/directory/:/WORKING_DIR 
-    -B /path/to/output/directory/:/OUTPUTS 
-    -B /tmp:/tmp 
-    --nv
-    /path/to/wholebrain.sif 
+    --home /path/to/inputs/directory/ \
+    -B /path/to/inputs/directory/:/INPUTS \
+    -B /path/to/working/directory/:/WORKING_DIR \
+    -B /path/to/output/directory/:/OUTPUTS \
+    -B /tmp:/tmp \
+    --nv \
+    /path/to/wholebrain.sif \
     [--ticv --w_skull --overlap 0.5 --device 1]
 
 * `--nv` only required when using GPU. 
