@@ -29,7 +29,12 @@ torch.backends.cudnn.benchmark = True
 
 device = torch.device("cuda:{}".format(args.device) if torch.cuda.is_available() else "cpu") ## specify the GPU id's, GPU id's start from 0.
 ### -----------------------------------------------------------------
-
+def resize_3d(img, target_size):
+    imx, imy, imz = img.shape
+    tx, ty, tz = target_size
+    zoom_ratio = ( float(tx) / float(imx), float(ty) / float(imy), float(tz) / float(imz))
+    img_resampled = ndimage.zoom( img, zoom_ratio, order=0, prefilter=False)
+    return img_resampled
 # set the output saving folder
 base_save_pred_dir = os.path.join(args.base_dir, 'pred_{}/'.format(args.overlap))
 
@@ -116,5 +121,7 @@ with torch.no_grad():
         labels = np.argmax(infer_outputs, axis=1).astype(np.uint8)[0]
         original_file = nib.load(os.path.join(path, case_name + '.nii.gz'))
         original_affine = original_file.affine
+        target_shape = original_file.shape
+        labels = resize_3d(labels, target_shape)
 
-        nib.save(nib.Nifti1Image(labels.astype(np.uint8), original_affine), os.path.join(args.results_folder_brain, case_name + '.nii.gz'))
+        nib.save(nib.Nifti1Image(labels.astype(np.uint8), original_affine), os.path.join(results_folder, case_name + '.nii.gz'))

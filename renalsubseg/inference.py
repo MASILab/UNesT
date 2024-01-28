@@ -66,7 +66,9 @@ val_transforms = transforms.Compose(
     [
         transforms.LoadImaged(keys=["image"]),
         transforms.AddChanneld(keys=["image"]),
-        transforms.NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+        transforms.Spacingd(keys=["image"], pixdim=(1.0, 1.0, 1.0), mode=("bilinear")),
+        transforms.ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+        transforms.SpatialPadd(keys=["image"], mode=["minimum"], spatial_size=[96, 96, 96]),
         transforms.ToTensord(keys=["image"]),
     ]
 )
