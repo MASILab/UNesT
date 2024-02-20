@@ -40,7 +40,7 @@ class="center">
 </p>
 
 Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/jt9jvsmxbv84qbkpd5ubygsyqh8ajkj8).
-.### Command to run Singularity
+### Command to run Singularity
 
     singularity run -e --contain 
     --home /path/to/inputs/directory/ \
