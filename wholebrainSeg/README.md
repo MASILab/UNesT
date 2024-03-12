@@ -39,7 +39,7 @@ class="center">
 class="center">
 </p>
 
-Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/jt9jvsmxbv84qbkpd5ubygsyqh8ajkj8).
+Pre-built container can be downloaded [here](https://vanderbilt.box.com/s/glnq14bvbmx8a9lpklzoe7olgdcwkqp9).
 ### Command to run Singularity
 
     singularity run -e --contain 
