@@ -23,14 +23,21 @@ class="center">
   publisher={Elsevier}
 }
 
-@misc{yu2023enhancing,
-      title={Enhancing Hierarchical Transformers for Whole Brain Segmentation with Intracranial Measurements Integration}, 
-      author={Xin Yu and Yucheng Tang and Qi Yang and Ho Hin Lee and Shunxing Bao and Yuankai Huo and Bennett A. Landman},
-      year={2023},
-      eprint={2309.04071},
-      archivePrefix={arXiv},
-      primaryClass={eess.IV}
+@inproceedings{10.1117/12.3009084,
+author = {Xin Yu and Yucheng Tang and Qi Yang and Ho Hin Lee and Shunxing Bao and Yuankai Huo and Bennett A. Landman},
+title = {{Enhancing hierarchical transformers for whole brain segmentation with intracranial measurements integration}},
+volume = {12930},
+booktitle = {Medical Imaging 2024: Clinical and Biomedical Imaging},
+editor = {Barjor S. Gimi and Andrzej Krol},
+organization = {International Society for Optics and Photonics},
+publisher = {SPIE},
+pages = {129300K},
+keywords = {Intracranial measurements, Whole brain segmentation, Hierarchical transformer},
+year = {2024},
+doi = {10.1117/12.3009084},
+URL = {https://doi.org/10.1117/12.3009084}
 }
+
 ```
 
 ## Singularity
