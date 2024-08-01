@@ -26,7 +26,7 @@ Before training, specify the paths in the yaml files and set the yaml path in th
 
 ## Inference
 ---
-We use [inference.py](inference.py) to test each images in the testing set and save the final output into Nifti format. The trained model weight can found here: [multiorganseg_weight](https://drive.google.com/file/d/175PGZUbaEefIdZ3oiCIBkxTxM7O2kv5a/view?usp=sharing).
+We use [inference.py](inference.py) to test each images in the testing set and save the final output into Nifti format. The trained model weight can found here: [multiorganseg_weight](https://vanderbilt.box.com/s/rjv8vn2h0pykm17in23blm8uzuj0tm3q).
 
 Running inference:
 ```

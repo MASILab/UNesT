@@ -92,7 +92,7 @@ Before training, specify the paths in the yaml files and set the yaml path in th
 
 ## Inference
 ---
-We use [inference.py](inference.py) to test each images in the testing set and save the probability of each fold into .npy format for further ensemble. We use [ensemble.py](ensemble.py) to ensemble the predictions from different folds and save the final prediction into Nifti format. The trained model weight can found here: [wholebrainseg_weight](https://drive.google.com/file/d/14kj0QIHi_MsWf4B1sfmJLGDM1ZAdX9Od/view?usp=share_link).
+We use [inference.py](inference.py) to test each images in the testing set and save the probability of each fold into .npy format for further ensemble. We use [ensemble.py](ensemble.py) to ensemble the predictions from different folds and save the final prediction into Nifti format. The trained model weight can found here: [wholebrainseg_weight](https://vanderbilt.box.com/s/lemw2wfyxtbno7vy1eemth4x6qreeie5).
 
 The results of different folds is saved as below:
 
@@ -114,7 +114,7 @@ python ensemble.py --prob_dir output_from_inference --img_path test_images_path 
 ```
 
 
-For UNesT with TICV/PFV estimation, we use [inference_ticv.py](inference_ticv.py) to test and save the final output into Nifti format. The trained model weight from whole brain segmentation with TICV/PFV estimation can found here: [wholebrainseg_ticv_weight](https://drive.google.com/file/d/1vomR2FlqDVq-C0iGvlBNHAqWg0jB8d9P/view?usp=sharing).
+For UNesT with TICV/PFV estimation, we use [inference_ticv.py](inference_ticv.py) to test and save the final output into Nifti format. The trained model weight from whole brain segmentation with TICV/PFV estimation can found here: [wholebrainseg_ticv_weight](https://vanderbilt.box.com/s/ghu19kx8372vxo7nos9dyco7d9qtbt5q).
 
 Running inference:
 ```
