@@ -30,10 +30,42 @@ from optimizers.lr_scheduler import WarmupCosineSchedule
 import yaml
 
 def count_parameters(model):
+    """
+    计算模型的可训练参数数量（以百万为单位）。
+    
+    Args:
+        model: PyTorch模型实例
+        
+    Returns:
+        float: 可训练参数数量（单位：百万）
+    
+    Example:
+        >>> model = UNesT(in_channels=1, out_channels=133)
+        >>> num_params = count_parameters(model)
+        >>> print(f"模型参数量: {num_params:.2f}M")
+    """
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return params/1000000
 
 def Dice(x, y):
+    """
+    计算两个3D二值掩码之间的Dice系数（Dice Similarity Coefficient）。
+    
+    Dice系数用于衡量两个集合的相似度，常用于评估医学图像分割结果。
+    计算公式: DSC = 2 * |X ∩ Y| / (|X| + |Y|)
+    
+    Args:
+        x: numpy.ndarray, 第一个3D二值掩码，形状为(H, W, D)
+        y: numpy.ndarray, 第二个3D二值掩码，形状为(H, W, D)
+        
+    Returns:
+        float: Dice系数，取值范围[0, 1]
+               - 1.0 表示完全重合
+               - 0.0 表示无重叠或y为空
+    
+    Note:
+        当y掩码全为0时，返回0.0以避免除零错误
+    """
     intersect = np.sum(np.sum(np.sum(x * y)))
     y_sum = np.sum(np.sum(np.sum(y)))
     if y_sum == 0:
@@ -42,6 +74,25 @@ def Dice(x, y):
     return 2 * intersect / (x_sum + y_sum)
 
 def resample(img, target_size):
+    """
+    将3D图像重采样到目标尺寸（使用最近邻插值）。
+    
+    该函数使用scipy的zoom函数进行图像重采样，适用于分割标签图像，
+    因为最近邻插值(order=0)不会产生标签值之间的插值。
+    
+    Args:
+        img: numpy.ndarray, 输入的3D图像，形状为(imx, imy, imz)
+        target_size: tuple, 目标尺寸(tx, ty, tz)
+        
+    Returns:
+        numpy.ndarray: 重采样后的3D图像，形状为target_size
+    
+    Example:
+        >>> img = np.random.rand(100, 100, 100)
+        >>> resampled = resample(img, (50, 50, 50))
+        >>> resampled.shape
+        (50, 50, 50)
+    """
     imx, imy, imz = img.shape
     tx, ty, tz = target_size
     zoom_ratio = ( float(tx) / float(imx), float(ty) / float(imy), float(tz) / float(imz))
@@ -49,10 +100,77 @@ def resample(img, target_size):
     return img_resampled
 
 def main(cfig, device):
+    """
+    UNesT模型训练的主函数。
+    
+    该函数负责初始化模型、优化器、损失函数和学习率调度器，
+    并执行完整的训练循环，包括定期验证和模型检查点保存。
+    
+    Args:
+        cfig: dict, 配置字典，包含以下关键字段：
+            - logdir: str, 日志和模型保存目录
+            - data_dir: str, 数据根目录
+            - jsondir: str, JSON数据列表目录
+            - use_pretrained: str, 预训练模型路径（可选）
+            - fold: int, 交叉验证折数
+            - num_classes: int, 分割类别数（默认133）
+            - model_type: str, 模型类型（'base'/'small'/'large'）
+            - patch_size: int, Patch大小
+            - depth: list, Transformer各层深度
+            - num_heads: list, 各层的注意力头数
+            - embed_dims: list, 各层的嵌入维度
+            - num_steps: int, 总训练步数
+            - lr: float, 学习率
+            - decay: float, 权重衰减
+            - batch_size: int, 批次大小
+            - loss_type: str, 损失函数类型
+            - eval_num: int, 验证间隔步数
+            - opt: str, 优化器类型（'adam'/'adamw'/'sgd'）
+            - lrdecay: bool, 是否使用学习率衰减
+            - roi_x/y/z: int, 训练ROI尺寸
+            - sw_batch_size: int, 滑动窗口推理批次大小
+        device: torch.device, 训练设备（CPU或CUDA）
+    
+    Returns:
+        None
+    
+    Note:
+        训练过程中会在logdir目录下保存：
+        - model.pt: 验证集上表现最好的模型
+        - model_final_epoch.pt: 最终训练完成的模型
+    """
     def save_ckp(state, checkpoint_dir):
+        """
+        保存模型检查点。
+        
+        Args:
+            state: dict, 包含以下键的字典：
+                - global_step: int, 当前训练步数
+                - state_dict: OrderedDict, 模型权重
+                - optimizer: dict, 优化器状态
+            checkpoint_dir: str, 检查点保存路径
+        """
         torch.save(state, checkpoint_dir)
 
     def train(global_step,train_loader,dice_val_best, val_shape_dict):
+        """
+        执行单个epoch的训练循环。
+        
+        Args:
+            global_step: int, 当前全局训练步数
+            train_loader: DataLoader, 训练数据加载器
+            dice_val_best: float, 历史最佳验证Dice分数
+            val_shape_dict: dict, 验证集图像形状信息
+            
+        Returns:
+            tuple: (global_step, dice_val_best)
+                - global_step: 更新后的全局训练步数
+                - dice_val_best: 更新后的最佳验证Dice分数
+        
+        Note:
+            每40步计算并打印训练Dice分数
+            每eval_num步执行验证并保存最佳模型
+        """
         model.train()
         epoch_iterator = tqdm(train_loader,desc="Training (X / X Steps) (loss=X.X)",dynamic_ncols=True)
         for step, batch in enumerate(epoch_iterator):
@@ -111,6 +229,23 @@ def main(cfig, device):
 
 
     def validation(epoch_iterator_val, val_shape_dict):
+        """
+        在验证集上执行模型验证。
+        
+        使用滑动窗口推理(sliding window inference)对验证图像进行预测，
+        计算每个类别的Dice分数。
+        
+        Args:
+            epoch_iterator_val: iterator, 验证数据迭代器
+            val_shape_dict: dict, 验证集图像形状字典（用于记录）
+            
+        Returns:
+            list: 每个类别（除背景外）的平均Dice分数，长度为num_classes-1
+        
+        Note:
+            - 使用overlap=0.2的滑动窗口推理
+            - 模型在CPU上进行推理以节省GPU显存
+        """
         model.eval()
         metric_values = []
         roi_size = (cfig['roi_x'], cfig['roi_y'], cfig['roi_z'])
@@ -137,11 +272,15 @@ def main(cfig, device):
 
         return mean_list
 
-    torch.backends.cudnn.benchmark = True
+    # ==================== GPU加速配置 ====================
+    torch.backends.cudnn.benchmark = True  # 自动寻找最优卷积算法以加速训练
     cfig['n_gpu'] = torch.cuda.device_count()
     cfig['device'] = device
 
     print(torch.version.cuda)
+    
+    # ==================== 模型初始化 ====================
+    # 根据配置选择不同规模的UNesT模型
     if cfig['model_type'] == 'base':
         from networks.unest import UNesT
     elif cfig['model_type'] == 'small':
@@ -155,16 +294,19 @@ def main(cfig, device):
                 num_heads=cfig['num_heads'],
                 embed_dim=cfig['embed_dims']
             ).to(device)
+    
+    # 加载预训练权重（如果指定）
     if cfig['use_pretrained']:
         ckpt = torch.load(cfig['use_pretrained'], map_location=device)
         model.load_state_dict(ckpt['state_dict'], strict=True)
         print('Use pretrained weights from: {}'.format(cfig['use_pretrained']))
     model.to(device)
 
-    
+    # ==================== 日志记录器 ====================
     logdir = cfig['logdir']
     writer = SummaryWriter(logdir=logdir)
 
+    # ==================== 优化器初始化 ====================
     if cfig['opt'] == "adam":
         optimizer = torch.optim.Adam(params = model.parameters(), lr=cfig['lr'],weight_decay= cfig['decay'])
 
@@ -174,9 +316,11 @@ def main(cfig, device):
     elif cfig['opt'] == "sgd":
         optimizer = torch.optim.SGD(params = model.parameters(), lr=cfig['lr'], momentum=cfig['momentum'], weight_decay=cfig['decay'])
 
+    # ==================== 学习率调度器 ====================
     if cfig['lrdecay']:
         scheduler = WarmupCosineSchedule(optimizer, warmup_steps=cfig['warmup_steps'], t_total=cfig['num_steps'])
 
+    # ==================== 损失函数初始化 ====================
     if cfig['loss_type'] == 'dice_ce':
         loss_function = DiceCELoss(to_onehot_y=True, softmax=True, squared_pred=False, smooth_nr=0, smooth_dr=1e-6)
     elif cfig['loss_type'] == 'dice':
@@ -184,6 +328,7 @@ def main(cfig, device):
     elif cfig['loss_type'] == 'ce':
         loss_function = nn.CrossEntropyLoss()
     elif cfig['loss_type'] == 'wce':
+        # 加权交叉熵损失，对指定类别增加权重
         weight = np.ones(133).tolist()
         for w in cfig['weight_classes']:
             weight[w] = 10.0
@@ -191,24 +336,35 @@ def main(cfig, device):
         class_weights = torch.FloatTensor(weight).to(device)
         loss_function = nn.CrossEntropyLoss(weight=class_weights)
     elif cfig['loss_type'] == 'dice_wce':
+        # Dice + 加权交叉熵组合损失
         weight = np.ones(133).tolist()
         for w in cfig['weight_classes']:
             weight[w] = 10.0
         class_weights = torch.FloatTensor(weight).to(device)
         loss_function = DiceCELoss(to_onehot_y=True, softmax=True, squared_pred=False, smooth_nr=0, smooth_dr=1e-6, ce_weight=class_weights)
     
+    # ==================== 数据加载 ====================
     train_loader, test_loader, val_shape_dict = get_loader(cfig)
     global_step = 0
     dice_val_best = 0.0
 
+    # ==================== 训练循环 ====================
     while global_step < cfig['num_steps']:
         global_step, dice_val_best = train(global_step,train_loader,dice_val_best, val_shape_dict)
+    
+    # ==================== 保存最终模型 ====================
     checkpoint = {'global_step': global_step,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}
     save_ckp(checkpoint, logdir+'/model_final_epoch.pt')
 
+# ==================== 程序入口 ====================
 if __name__ == '__main__':
+    # 加载YAML配置文件
     yaml_file = 'wholebrainSeg/yaml/unest_base.yaml'
     with open(yaml_file, 'r') as f:
         cfig = yaml.safe_load(f)
+    
+    # 设置训练设备（优先使用CUDA）
     device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    
+    # 启动训练
     main(cfig, device)
