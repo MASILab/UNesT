@@ -127,6 +127,8 @@ dataset/
 │   └── ... (同上)
 └── test/
     └── ... (同上)
+
+执行命令：mkdir -p /home/tenoke4090/B_WorkPath/mrqs/dataset/{train,val,test}/{normal,motion,gibbs,aliasing,chemical_shift,susceptibility,other}    
 ```
 
 ---
