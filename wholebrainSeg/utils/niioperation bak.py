@@ -11,11 +11,10 @@ NIfTI操作工具 - 标签空间映射
     ├── 76384925062202/                  # 患者编号
     │   ├── dcm/                         # 原始DICOM影像
     │   ├── original_from_dicom.nii.gz   # DICOM转换后的NIfTI (输出)
-    │   ├── original_bet.nii.gz          # HD-BET去颅骨后的图像 (输出，可复用)
-    │   ├── label_original_space.nii.gz  # 映射到原始空间的标签 (输出)
     │   └── c_results/
     │       ├── brain_preproc_img.nii.gz # 预处理后的影像（去颅骨，mini空间）
-    │       └── cleanup_labelmap96_src.nii.gz # 96空间下的标签结果
+    │       ├── cleanup_labelmap96_src.nii.gz # 96空间下的标签结果
+    │       └── label_original_space.nii.gz  # 映射到原始空间的标签 (输出)
 
 处理流程：
     1. DICOM -> NIfTI转换
@@ -272,32 +271,25 @@ class NiftiOperator:
                                           original_img_path: str,
                                           preproc_img_path: str,
                                           output_path: str,
-                                          original_bet_path: str = None,
-                                          interpolation: str = 'genericLabel',
-                                          use_direct_registration: bool = False) -> bool:
+                                          interpolation: str = 'genericLabel') -> bool:
         """
         将标签从预处理空间重采样到原始影像空间
         
         处理流程（以MNI152为中间空间，使用HD-BET去颅骨提高配准精度）：
-        
-        方式1 (use_direct_registration=False, 默认):
-            1. HD-BET去颅骨: original_from_dicom -> original_bet
-            2. 配准1: brain_preproc_img -> MNI152
-            3. 配准2: original_bet -> MNI152
-            4. 组合变换重采样标签
-        
-        方式2 (use_direct_registration=True, 推荐):
-            直接将 brain_preproc_img 配准到 original_bet
-            减少中间环节，降低误差累积
+        1. HD-BET去颅骨: original_from_dicom -> original_bet
+        2. 配准1: brain_preproc_img -> MNI152
+           得到 fwdtransforms1: preproc -> MNI
+        3. 配准2: original_bet -> MNI152
+           得到 invtransforms2: MNI -> original (逆变换)
+           注：original_bet与original_from_dicom在同一空间，变换可直接应用
+        4. 组合变换: label -> (fwdtransforms1) -> MNI -> (invtransforms2) -> original
         
         Args:
             label_path: 预处理空间的标签文件路径
             original_img_path: 原始影像路径（DICOM转换后的）
             preproc_img_path: 预处理后的影像路径
             output_path: 输出标签路径
-            original_bet_path: 去颅骨图像保存路径（None则保存到临时目录）
             interpolation: 插值方式 ('nearest', 'linear', 'genericLabel')
-            use_direct_registration: 是否使用直接配准方式（推荐True）
             
         Returns:
             bool: 是否成功
@@ -306,8 +298,8 @@ class NiftiOperator:
             print("错误: 需要安装ANTs (antspyx)")
             return False
         
-        # 检查MNI152模板是否存在（仅在非直接配准模式需要）
-        if not use_direct_registration and not os.path.exists(self.mni152_path):
+        # 检查MNI152模板是否存在
+        if not os.path.exists(self.mni152_path):
             print(f"错误: MNI152模板不存在: {self.mni152_path}")
             return False
         
@@ -316,102 +308,73 @@ class NiftiOperator:
         self.temp_dirs.append(temp_dir)
         
         try:
+            print("  正在进行空间映射（MNI152中间空间 + HD-BET去颅骨）...")
+            print(f"  MNI152模板: {self.mni152_path}")
+            
             # =====================================================
             # 步骤1: HD-BET去颅骨 - 对original_from_dicom进行去颅骨
             # =====================================================
-            # 如果指定了保存路径，保存到指定位置；否则使用临时目录
-            if original_bet_path is None:
-                original_bet_path = os.path.join(temp_dir, 'original_bet.nii.gz')
+            original_bet_path = os.path.join(temp_dir, 'original_bet.nii.gz')
             
-            # 检查是否已存在 original_bet 文件（避免重复处理）
-            bet_from_cache = False
-            if os.path.exists(original_bet_path):
-                print(f"\n  [去颅骨] 使用已存在的文件: {original_bet_path}")
-                bet_from_cache = True
-            
-            if not bet_from_cache:
-                if HAS_HD_BET:
-                    print("\n  [去颅骨] original_from_dicom -> original_bet")
-                    print(f"    输出路径: {original_bet_path}")
-                    if not self.run_bet(original_img_path, original_bet_path, keep_mask=False):
-                        print("  警告: 去颅骨失败，使用原始图像进行配准")
-                        original_bet_path = original_img_path
-                else:
-                    print("  警告: HD-BET不可用，使用原始图像进行配准")
+            if HAS_HD_BET:
+                print("\n  [去颅骨] original_from_dicom -> original_bet")
+                if not self.run_bet(original_img_path, original_bet_path, keep_mask=False):
+                    print("  警告: 去颅骨失败，使用原始图像进行配准")
                     original_bet_path = original_img_path
-            
-            # =====================================================
-            # 根据模式选择配准策略
-            # =====================================================
-            if use_direct_registration:
-                # =====================================================
-                # 方式2: 直接配准（推荐）- 减少误差累积
-                # brain_preproc_img -> original_bet (直接配准)
-                # =====================================================
-                print("\n  [直接配准模式] brain_preproc_img -> original_bet")
-                print("  优点: 减少中间环节，降低误差累积")
-                
-                reg_result = self._ants_rigid_registration(
-                    fixed_path=original_bet_path,  # 目标：去颅骨后的原始图像
-                    moving_path=preproc_img_path,  # 源：预处理图像
-                    temp_dir=temp_dir,
-                    prefix='direct_reg_'
-                )
-                
-                fwdtransforms = reg_result['fwdtransforms']
-                if not fwdtransforms:
-                    print("  错误: 配准未产生变换文件")
-                    return False
-                print(f"    获取变换: preproc -> original ({len(fwdtransforms)} 个文件)")
-                
-                combined_transforms = fwdtransforms
-                
             else:
-                # =====================================================
-                # 方式1: MNI152中间空间配准
-                # =====================================================
-                print("  正在进行空间映射（MNI152中间空间 + HD-BET去颅骨）...")
-                print(f"  MNI152模板: {self.mni152_path}")
-                
-                # 配准1: brain_preproc_img -> MNI152
-                print("\n  [配准1] brain_preproc_img -> MNI152")
-                reg1_result = self._ants_rigid_registration(
-                    fixed_path=self.mni152_path,
-                    moving_path=preproc_img_path,
-                    temp_dir=temp_dir,
-                    prefix='reg1_preproc_to_mni_'
-                )
-                
-                fwdtransforms1 = reg1_result['fwdtransforms']
-                if not fwdtransforms1:
-                    print("  错误: 配准1未产生变换文件")
-                    return False
-                print(f"    获取变换: preproc -> MNI ({len(fwdtransforms1)} 个文件)")
-                
-                # 配准2: original_bet -> MNI152
-                print("\n  [配准2] original_bet -> MNI152")
-                reg2_result = self._ants_rigid_registration(
-                    fixed_path=self.mni152_path,
-                    moving_path=original_bet_path,
-                    temp_dir=temp_dir,
-                    prefix='reg2_original_to_mni_'
-                )
-                
-                invtransforms2 = reg2_result['invtransforms']
-                if not invtransforms2:
-                    print("  错误: 配准2未产生逆变换文件")
-                    return False
-                print(f"    获取变换: MNI -> original ({len(invtransforms2)} 个文件)")
-                
-                # 组合变换
-                print("\n  组合变换链: label -> MNI152 -> original_space")
-                combined_transforms = fwdtransforms1 + invtransforms2
-                print(f"    总变换文件数: {len(combined_transforms)}")
+                print("  警告: HD-BET不可用，使用原始图像进行配准")
+                original_bet_path = original_img_path
             
             # =====================================================
-            # 使用变换重采样标签
+            # 步骤2: 配准1 - brain_preproc_img -> MNI152
             # =====================================================
-            print(f"\n  正在重采样标签到原始空间...")
+            print("\n  [配准1] brain_preproc_img -> MNI152")
+            reg1_result = self._ants_rigid_registration(
+                fixed_path=self.mni152_path,
+                moving_path=preproc_img_path,
+                temp_dir=temp_dir,
+                prefix='reg1_preproc_to_mni_'
+            )
+            
+            # fwdtransforms1: preproc -> MNI
+            fwdtransforms1 = reg1_result['fwdtransforms']
+            if not fwdtransforms1:
+                print("  错误: 配准1未产生变换文件")
+                return False
+            print(f"    获取变换: preproc -> MNI ({len(fwdtransforms1)} 个文件)")
+            
+            # =====================================================
+            # 步骤3: 配准2 - original_bet -> MNI152
+            # 使用去颅骨后的图像进行配准，提高配准精度
+            # =====================================================
+            print("\n  [配准2] original_bet -> MNI152")
+            reg2_result = self._ants_rigid_registration(
+                fixed_path=self.mni152_path,
+                moving_path=original_bet_path,
+                temp_dir=temp_dir,
+                prefix='reg2_original_to_mni_'
+            )
+            
+            # invtransforms2: MNI -> original (逆变换)
+            # 注：original_bet与original_from_dicom在同一空间
+            # 所以这个变换可以直接用于将标签映射到原始空间
+            invtransforms2 = reg2_result['invtransforms']
+            if not invtransforms2:
+                print("  错误: 配准2未产生逆变换文件")
+                return False
+            print(f"    获取变换: MNI -> original ({len(invtransforms2)} 个文件)")
+            
+            # =====================================================
+            # 步骤4: 组合变换 - preproc -> MNI -> original
+            # 变换列表顺序: 先应用 fwdtransforms1, 再应用 invtransforms2
+            # =====================================================
+            print("\n  组合变换链: label -> MNI152 -> original_space")
+            combined_transforms = fwdtransforms1 + invtransforms2
+            print(f"    总变换文件数: {len(combined_transforms)}")
+            
+            # =====================================================
+            # 步骤5: 使用组合变换重采样标签
+            # =====================================================
             success = self._ants_resample_label(
                 label_path=label_path,
                 fixed_path=original_img_path,
@@ -437,13 +400,12 @@ class NiftiOperator:
                 if temp_dir in self.temp_dirs:
                     self.temp_dirs.remove(temp_dir)
     
-    def process_case(self, case_id: str, use_direct_registration: bool = True) -> dict:
+    def process_case(self, case_id: str) -> dict:
         """
         处理单个患者case
         
         Args:
             case_id: 患者编号，如 '76384925062202'
-            use_direct_registration: 是否使用直接配准方式（推荐True，减少误差累积）
             
         Returns:
             dict: 处理结果
@@ -471,10 +433,8 @@ class NiftiOperator:
         original_nii_path = os.path.join(case_dir, 'original_from_dicom.nii.gz')
         preproc_img_path = os.path.join(c_results_dir, 'brain_preproc_img.nii.gz')
         label_path = os.path.join(c_results_dir, 'cleanup_labelmap96_src.nii.gz')
-        # 输出到患者目录
+        # 输出到患者目录的c_results下
         output_label_path = os.path.join(case_dir, 'label_original_space.nii.gz')
-        # 去颅骨图像保存路径（保存到case_dir下，便于复用）
-        original_bet_path = os.path.join(case_dir, 'original_bet.nii.gz')
         
         # 检查预处理文件是否存在
         if not os.path.exists(preproc_img_path):
@@ -494,9 +454,7 @@ class NiftiOperator:
         
         # 步骤2: 将标签映射到原始空间
         if not self.resample_label_to_original_space(
-            label_path, original_nii_path, preproc_img_path, output_label_path,
-            original_bet_path=original_bet_path,
-            use_direct_registration=use_direct_registration
+            label_path, original_nii_path, preproc_img_path, output_label_path
         ):
             result['message'] = '标签映射失败'
             return result
@@ -520,19 +478,17 @@ class NiftiOperator:
         
         return result
     
-    def run(self, case_ids: list = None, use_direct_registration: bool = True):
+    def run(self, case_ids: list = None):
         """
         执行批量处理
         
         Args:
             case_ids: 指定处理的case列表，None则处理所有
-            use_direct_registration: 是否使用直接配准方式（推荐True）
         """
         print("=" * 70)
         print("NIfTI空间映射工具")
         print("=" * 70)
         print(f"源目录: {self.source_dir}")
-        print(f"配准模式: {'直接配准' if use_direct_registration else 'MNI152中间空间'}")
         
         # 获取所有case
         if case_ids is None:
@@ -554,7 +510,7 @@ class NiftiOperator:
         # 处理每个case
         results = []
         for case_id in tqdm(case_ids, desc="处理进度"):
-            result = self.process_case(case_id, use_direct_registration=use_direct_registration)
+            result = self.process_case(case_id)
             results.append(result)
         
         # 统计结果
@@ -574,29 +530,22 @@ class NiftiOperator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='NIfTI空间映射工具 - 将标签从预处理空间映射到原始DICOM空间'
+        description='NIfTI空间映射工具 - 将标签从预处理空间映射到原始DICOM空间（MNI152中间空间）'
     )
     parser.add_argument('--source_dir', type=str,
                         default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/UIH164',
                         help='数据根目录')
     parser.add_argument('--mni152_path', type=str,
                         default=DEFAULT_MNI152_PATH,
-                        help='MNI152模板路径（仅MNI中间空间模式需要）')
+                        help='MNI152模板路径')
     parser.add_argument('--case_ids', type=str, nargs='+',
                         default=None,
                         help='指定处理的case ID列表')
-    parser.add_argument('--use_direct_registration', action='store_true', default=True,
-                        help='使用直接配准模式（推荐，减少误差累积）')
-    parser.add_argument('--use_mni_intermediate', action='store_true',
-                        help='使用MNI152中间空间配准模式（可能引入更多误差）')
     
     args = parser.parse_args()
     
-    # 如果指定了MNI中间空间模式，则关闭直接配准
-    use_direct = not args.use_mni_intermediate
-    
     operator = NiftiOperator(source_dir=args.source_dir, mni152_path=args.mni152_path)
-    operator.run(case_ids=args.case_ids, use_direct_registration=use_direct)
+    operator.run(case_ids=args.case_ids)
 
 
 if __name__ == '__main__':
