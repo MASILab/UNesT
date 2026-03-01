@@ -18,19 +18,46 @@ NIfTI操作工具 - 标签空间映射
 
 处理流程：
     1. DICOM -> NIfTI转换
-    2. 计算原始空间与预处理空间的映射矩阵
-    3. 将标签重采样到原始空间
+    2. HD-BET去颅骨：original_from_dicom -> original_bet (提高配准精度)
+    3. ANTs刚性配准（以MNI152为中间空间）：
+       - brain_preproc_img -> MNI152_T1_1mm_brain.nii.gz
+       - original_bet -> MNI152_T1_1mm_brain.nii.gz
+    4. 组合2次刚性变换将标签重采样到原始空间
 
 依赖：
-    pip install nibabel SimpleITK numpy
+    pip install nibabel SimpleITK numpy antspyx
+    HD-BET: https://github.com/MIC-DKFZ/hd-bet
 """
 
 import os
+import sys
 import argparse
 import numpy as np
 import nibabel as nib
 from glob import glob
 from tqdm import tqdm
+import tempfile
+import shutil
+
+# 添加commen_utils到路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'commen_utils'))
+
+try:
+    from HD_BET.run import run_hd_bet
+    import HD_BET
+    HAS_HD_BET = True
+except ImportError:
+    HAS_HD_BET = False
+    print("警告: HD-BET未安装，去颅骨功能不可用")
+    print("安装方法: pip install HD-BET 或将commen_utils添加到PYTHONPATH")
+
+try:
+    import ants
+    HAS_ANTS = True
+except ImportError:
+    HAS_ANTS = False
+    print("警告: antspyx未安装，配准功能不可用")
+    print("安装方法: pip install antspyx")
 
 try:
     import SimpleITK as sitk
@@ -41,17 +68,30 @@ except ImportError:
     print("安装方法: pip install SimpleITK")
 
 
+# MNI152模板路径（默认位置，可通过参数覆盖）
+DEFAULT_MNI152_PATH = '/home/tenoke4090/B_WorkPath/mrqs/UNesT/commen_utils/minispace/model/mni_space/MNI152_T1_1mm_brain.nii.gz'
+
+
 class NiftiOperator:
-    """NIfTI空间映射操作器"""
+    """NIfTI空间映射操作器 - 使用ANTs进行刚性配准（MNI152中间空间）"""
     
-    def __init__(self, source_dir: str):
+    def __init__(self, source_dir: str, mni152_path: str = None):
         """
         初始化
         
         Args:
             source_dir: 数据根目录，如 /path/to/UIH164
+            mni152_path: MNI152模板路径，默认使用内置路径
         """
         self.source_dir = source_dir
+        self.mni152_path = mni152_path or DEFAULT_MNI152_PATH
+        self.temp_dirs = []  # 跟踪临时目录
+    
+    def __del__(self):
+        """清理临时目录"""
+        for temp_dir in self.temp_dirs:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
     
     def dicom_to_nifti(self, dicom_dir: str, output_path: str) -> bool:
         """
@@ -87,273 +127,278 @@ class NiftiOperator:
             print(f"  DICOM转换失败: {e}")
             return False
     
-    def compute_affine_transform(self, source_img: nib.Nifti1Image, 
-                                  target_img: nib.Nifti1Image) -> np.ndarray:
+    def _ants_rigid_registration(self, fixed_path: str, moving_path: str, 
+                                   temp_dir: str, prefix: str = 'rigid_reg_') -> dict:
         """
-        计算从source空间到target空间的仿射变换矩阵
+        使用ANTs进行刚性配准
+        
+        配准方向：moving -> fixed
         
         Args:
-            source_img: 源图像（如原始DICOM转后的图像）
-            target_img: 目标图像（如预处理后的brain_preproc_img）
+            fixed_path: 固定图像路径（目标空间）
+            moving_path: 移动图像路径（源空间）
+            temp_dir: 临时文件目录
+            prefix: 输出文件前缀
             
         Returns:
-            np.ndarray: 4x4仿射变换矩阵，用于将target空间的点映射到source空间
+            dict: ANTs配准结果，包含：
+                - fwdtransforms: 变换文件列表（moving -> fixed）
+                - invtransforms: 逆变换文件列表（fixed -> moving）
+                - warpedmovout: 变换后的移动图像
         """
-        # source_affine: 原始空间的affine矩阵
-        # target_affine: 预处理空间的affine矩阵
-        # 
-        # 要将target空间的坐标映射到source空间:
-        # x_source = source_affine @ inv(target_affine) @ x_target
-        # 
-        # 即: transform = source_affine @ inv(target_affine)
+        if not HAS_ANTS:
+            raise RuntimeError("ANTs未安装，无法进行配准")
         
-        source_affine = source_img.affine
-        target_affine = target_img.affine
+        # 使用ANTs读取图像
+        fixed_img = ants.image_read(fixed_path)
+        moving_img = ants.image_read(moving_path)
         
-        # 计算映射矩阵: target -> source
-        transform = source_affine @ np.linalg.inv(target_affine)
+        # 输出前缀
+        outprefix = os.path.join(temp_dir, prefix)
         
-        return transform
+        print("    正在进行ANTs刚性配准...")
+        print(f"    Fixed (目标): {os.path.basename(fixed_path)}")
+        print(f"    Moving (源): {os.path.basename(moving_path)}")
+        
+        # 执行刚性配准
+        registration_result = ants.registration(
+            fixed=fixed_img,
+            moving=moving_img,
+            type_of_transform='Rigid',  # 刚性变换（平移+旋转）
+            outprefix=outprefix,
+            verbose=False
+        )
+        
+        return registration_result
+    
+    def _ants_resample_label(self, label_path: str, fixed_path: str,
+                              transforms: list, output_path: str,
+                              interpolation: str = 'nearest') -> bool:
+        """
+        使用ANTs将标签重采样到固定图像空间
+        
+        Args:
+            label_path: 标签文件路径（在moving空间）
+            fixed_path: 参考图像路径（目标空间）
+            transforms: 变换文件列表（from ants.registration）
+            output_path: 输出路径
+            interpolation: 插值方式 ('nearest', 'linear', 'genericLabel')
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            # 读取标签和参考图像
+            label_img = ants.image_read(label_path)
+            fixed_img = ants.image_read(fixed_path)
+            
+            # 对于标签图像，使用最近邻插值或genericLabel
+            if interpolation == 'nearest':
+                interp_method = 'nearestNeighbor'
+            elif interpolation == 'genericLabel':
+                interp_method = 'genericLabel'
+            else:
+                interp_method = 'linear'
+            
+            print(f"    正在重采样标签到原始空间...")
+            
+            # 应用变换
+            resampled_label = ants.apply_transforms(
+                fixed=fixed_img,
+                moving=label_img,
+                transformlist=transforms,
+                interpolator=interp_method
+            )
+            
+            # 保存结果
+            ants.image_write(resampled_label, output_path)
+            print(f"    标签重采样完成: {output_path}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"    标签重采样失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+    def run_bet(self, input_img_path: str, output_bet_path: str, 
+                device: int = 0, keep_mask: bool = True) -> bool:
+        """
+        使用HD-BET进行去颅骨处理
+        
+        Args:
+            input_img_path: 输入图像路径
+            output_bet_path: 输出去颅骨图像路径
+            device: GPU设备ID，-1表示CPU
+            keep_mask: 是否保存脑mask
+            
+        Returns:
+            bool: 是否成功
+        """
+        if not HAS_HD_BET:
+            print("错误: HD-BET未安装")
+            return False
+        
+        try:
+            print(f"    HD-BET去颅骨: {os.path.basename(input_img_path)}")
+            
+            run_hd_bet(
+                mri_fnames=input_img_path,
+                output_fnames=output_bet_path,
+                mode="accurate",
+                config_file=os.path.join(HD_BET.__path__[0], "config.py"),
+                device=device,
+                postprocess=False,
+                do_tta=False,
+                keep_mask=keep_mask,
+                overwrite=True,
+                bet=True,  # 输出去颅骨后的图像
+            )
+            
+            print(f"    去颅骨完成: {output_bet_path}")
+            return True
+            
+        except Exception as e:
+            print(f"    去颅骨失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     
     def resample_label_to_original_space(self, 
                                           label_path: str, 
                                           original_img_path: str,
                                           preproc_img_path: str,
                                           output_path: str,
-                                          interpolation: str = 'nearest') -> bool:
+                                          interpolation: str = 'genericLabel') -> bool:
         """
         将标签从预处理空间重采样到原始影像空间
         
-        通过配准计算brain_preproc_img和original_from_dicom之间的变换，
-        然后用该变换将标签映射到原始空间
+        处理流程（以MNI152为中间空间，使用HD-BET去颅骨提高配准精度）：
+        1. HD-BET去颅骨: original_from_dicom -> original_bet
+        2. 配准1: brain_preproc_img -> MNI152
+           得到 fwdtransforms1: preproc -> MNI
+        3. 配准2: original_bet -> MNI152
+           得到 invtransforms2: MNI -> original (逆变换)
+           注：original_bet与original_from_dicom在同一空间，变换可直接应用
+        4. 组合变换: label -> (fwdtransforms1) -> MNI -> (invtransforms2) -> original
         
         Args:
             label_path: 预处理空间的标签文件路径
-            original_img_path: 原始影像路径（DICOM转换后的或原始的）
-            preproc_img_path: 预处理后的影像路径（用于计算映射关系）
+            original_img_path: 原始影像路径（DICOM转换后的）
+            preproc_img_path: 预处理后的影像路径
             output_path: 输出标签路径
-            interpolation: 插值方式 ('nearest', 'linear')
+            interpolation: 插值方式 ('nearest', 'linear', 'genericLabel')
             
         Returns:
             bool: 是否成功
         """
+        if not HAS_ANTS:
+            print("错误: 需要安装ANTs (antspyx)")
+            return False
+        
+        # 检查MNI152模板是否存在
+        if not os.path.exists(self.mni152_path):
+            print(f"错误: MNI152模板不存在: {self.mni152_path}")
+            return False
+        
+        # 创建临时目录
+        temp_dir = tempfile.mkdtemp(prefix='ants_reg_mni_')
+        self.temp_dirs.append(temp_dir)
+        
         try:
-            from scipy.ndimage import map_coordinates
+            print("  正在进行空间映射（MNI152中间空间 + HD-BET去颅骨）...")
+            print(f"  MNI152模板: {self.mni152_path}")
             
-            # 加载图像
-            original_img = nib.load(original_img_path)
-            preproc_img = nib.load(preproc_img_path)
-            label_img = nib.load(label_path)
+            # =====================================================
+            # 步骤1: HD-BET去颅骨 - 对original_from_dicom进行去颅骨
+            # =====================================================
+            original_bet_path = os.path.join(temp_dir, 'original_bet.nii.gz')
             
-            # 获取数据
-            label_data = label_img.get_fdata()
-            original_shape = original_img.shape[:3]
-            
-            # 方法：使用配准计算变换矩阵
-            # 将 brain_preproc_img 配准到 original_from_dicom
-            # 得到 original -> preproc 的变换
-            print("  正在计算空间变换（刚性配准）...")
-            
-            if HAS_SITK:
-                # 使用SimpleITK进行刚性配准
-                registration_transform = self._register_images(
-                    original_img_path, preproc_img_path, use_affine=False
-                )
-                if registration_transform is not None:
-                    # 配准返回的是 preproc -> original 的变换
-                    # 我们需要 original_voxel -> label_voxel 的变换
-                    # 变换链: original_voxel -> world -> preproc_voxel -> label_voxel
-                    # label_voxel = inv(label_affine) @ (preproc -> world) @ orig_affine @ orig_voxel
-                    
-                    # 但配准给的变换是在物理空间中的，需要转换为voxel空间
-                    # 简化：直接使用配准得到的变换矩阵
-                    
-                    # 配准变换: preproc 物理坐标 -> original 物理坐标
-                    # 我们需要: original voxel -> label voxel
-                    
-                    # orig_voxel -> world_orig (orig_affine)
-                    # world_orig -> world_preproc (inv(registration_transform)) 
-                    # world_preproc -> label_voxel (inv(label_affine))
-                    
-                    # 但registration_transform可能是 preproc -> original
-                    # 需要测试方向
-                    
-                    voxel_transform = registration_transform
-                else:
-                    # 配准失败，使用affine矩阵
-                    print("  配准失败，使用affine矩阵计算...")
-                    orig_affine = original_img.affine
-                    preproc_affine = preproc_img.affine
-                    voxel_transform = np.linalg.inv(preproc_affine) @ orig_affine
+            if HAS_HD_BET:
+                print("\n  [去颅骨] original_from_dicom -> original_bet")
+                if not self.run_bet(original_img_path, original_bet_path, keep_mask=False):
+                    print("  警告: 去颅骨失败，使用原始图像进行配准")
+                    original_bet_path = original_img_path
             else:
-                # 没有SimpleITK，使用affine矩阵
-                orig_affine = original_img.affine
-                preproc_affine = preproc_img.affine
-                voxel_transform = np.linalg.inv(preproc_affine) @ orig_affine
+                print("  警告: HD-BET不可用，使用原始图像进行配准")
+                original_bet_path = original_img_path
             
-            # 生成原始图像空间的所有体素坐标
-            coords = np.mgrid[0:original_shape[0], 
-                              0:original_shape[1], 
-                              0:original_shape[2]].reshape(3, -1).astype(np.float64)
+            # =====================================================
+            # 步骤2: 配准1 - brain_preproc_img -> MNI152
+            # =====================================================
+            print("\n  [配准1] brain_preproc_img -> MNI152")
+            reg1_result = self._ants_rigid_registration(
+                fixed_path=self.mni152_path,
+                moving_path=preproc_img_path,
+                temp_dir=temp_dir,
+                prefix='reg1_preproc_to_mni_'
+            )
             
-            # 添加齐次坐标
-            coords_h = np.vstack([coords, np.ones((1, coords.shape[1]))])
+            # fwdtransforms1: preproc -> MNI
+            fwdtransforms1 = reg1_result['fwdtransforms']
+            if not fwdtransforms1:
+                print("  错误: 配准1未产生变换文件")
+                return False
+            print(f"    获取变换: preproc -> MNI ({len(fwdtransforms1)} 个文件)")
             
-            # 变换到标签空间的体素坐标
-            label_coords = voxel_transform @ coords_h
-            label_coords = label_coords[:3]  # 只取前3行
+            # =====================================================
+            # 步骤3: 配准2 - original_bet -> MNI152
+            # 使用去颅骨后的图像进行配准，提高配准精度
+            # =====================================================
+            print("\n  [配准2] original_bet -> MNI152")
+            reg2_result = self._ants_rigid_registration(
+                fixed_path=self.mni152_path,
+                moving_path=original_bet_path,
+                temp_dir=temp_dir,
+                prefix='reg2_original_to_mni_'
+            )
             
-            # 使用map_coordinates进行插值
-            order = 0 if interpolation == 'nearest' else 1
-            resampled = map_coordinates(label_data, label_coords, 
-                                        order=order, 
-                                        mode='constant', 
-                                        cval=0.0)
-            resampled = resampled.reshape(original_shape)
+            # invtransforms2: MNI -> original (逆变换)
+            # 注：original_bet与original_from_dicom在同一空间
+            # 所以这个变换可以直接用于将标签映射到原始空间
+            invtransforms2 = reg2_result['invtransforms']
+            if not invtransforms2:
+                print("  错误: 配准2未产生逆变换文件")
+                return False
+            print(f"    获取变换: MNI -> original ({len(invtransforms2)} 个文件)")
             
-            # 保存结果
-            orig_affine = original_img.affine
-            nib.Nifti1Image(resampled.astype(np.int32), orig_affine).to_filename(output_path)
+            # =====================================================
+            # 步骤4: 组合变换 - preproc -> MNI -> original
+            # 变换列表顺序: 先应用 fwdtransforms1, 再应用 invtransforms2
+            # =====================================================
+            print("\n  组合变换链: label -> MNI152 -> original_space")
+            combined_transforms = fwdtransforms1 + invtransforms2
+            print(f"    总变换文件数: {len(combined_transforms)}")
             
-            print(f"  标签映射完成: {output_path}")
-            return True
+            # =====================================================
+            # 步骤5: 使用组合变换重采样标签
+            # =====================================================
+            success = self._ants_resample_label(
+                label_path=label_path,
+                fixed_path=original_img_path,
+                transforms=combined_transforms,
+                output_path=output_path,
+                interpolation=interpolation
+            )
+            
+            if success:
+                print(f"\n  标签映射完成: {output_path}")
+            
+            return success
             
         except Exception as e:
             print(f"  标签映射失败: {e}")
             import traceback
             traceback.print_exc()
             return False
-    
-    def _register_images(self, fixed_path: str, moving_path: str, 
-                         use_affine: bool = False) -> np.ndarray:
-        """
-        使用SimpleITK进行图像配准
-        
-        Args:
-            fixed_path: 固定图像路径（目标空间，这里是original_from_dicom）
-            moving_path: 移动图像路径（源空间，这里是brain_preproc_img）
-            use_affine: 是否使用仿射变换，False则使用刚性变换
-            
-        Returns:
-            np.ndarray: 4x4变换矩阵，将moving空间的点映射到fixed空间
-        """
-        try:
-            # 读取图像
-            fixed = sitk.ReadImage(fixed_path, sitk.sitkFloat32)
-            moving = sitk.ReadImage(moving_path, sitk.sitkFloat32)
-            
-            # 初始化配准方法
-            registration_method = sitk.ImageRegistrationMethod()
-            
-            # 设置相似性度量（互信息）
-            registration_method.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-            registration_method.SetMetricSamplingStrategy(registration_method.RANDOM)
-            registration_method.SetMetricSamplingPercentage(0.1)
-            
-            # 设置插值器
-            registration_method.SetInterpolator(sitk.sitkLinear)
-            
-            # 设置优化器
-            registration_method.SetOptimizerAsGradientDescent(
-                learningRate=1.0,
-                numberOfIterations=200,
-                convergenceMinimumValue=1e-6,
-                convergenceWindowSize=10
-            )
-            registration_method.SetOptimizerScalesFromPhysicalShift()
-            
-            # 初始变换：基于图像中心对齐
-            initial_transform = sitk.CenteredTransformInitializer(
-                fixed,
-                moving,
-                sitk.Euler3DTransform() if not use_affine else sitk.AffineTransform(3),
-                sitk.CenteredTransformInitializerFilter.GEOMETRY
-            )
-            registration_method.SetInitialTransform(initial_transform, inPlace=False)
-            
-            # 多分辨率策略
-            registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
-            registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[2, 1, 0])
-            registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-            
-            # 执行配准
-            final_transform = registration_method.Execute(fixed, moving)
-            
-            # 获取变换参数
-            params = final_transform.GetParameters()
-            
-            if not use_affine:
-                # 刚性变换：3个旋转 + 3个平移
-                # Euler3DTransform: rx, ry, rz, tx, ty, tz
-                rx, ry, rz, tx, ty, tz = params
-                
-                # 构建旋转矩阵
-                cx, sx = np.cos(rx), np.sin(rx)
-                cy, sy = np.cos(ry), np.sin(ry)
-                cz, sz = np.cos(rz), np.sin(rz)
-                
-                # Rx * Ry * Rz
-                Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-                Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-                Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-                R = Rx @ Ry @ Rz
-                
-                # 构建4x4矩阵
-                transform_matrix = np.eye(4)
-                transform_matrix[:3, :3] = R
-                transform_matrix[:3, 3] = [tx, ty, tz]
-            else:
-                # 仿射变换：12个参数
-                transform_matrix = np.eye(4)
-                transform_matrix[:3, :] = np.array(params).reshape(3, 4)
-            
-            print(f"  配准完成，变换矩阵:")
-            print(f"    平移: [{transform_matrix[0,3]:.2f}, {transform_matrix[1,3]:.2f}, {transform_matrix[2,3]:.2f}]")
-            
-            # 将SimpleITK的变换转换为nibabel/RAS坐标系
-            # SimpleITK使用LPS坐标系，nibabel使用RAS
-            ras_to_lps = np.diag([-1, -1, 1, 1])
-            transform_ras = ras_to_lps @ transform_matrix @ ras_to_lps
-            
-            # 现在需要转换为voxel空间的变换
-            # transform_ras: moving 物理坐标 -> fixed 物理坐标
-            # 我们需要: fixed_voxel -> moving_voxel
-            
-            fixed_img = nib.load(fixed_path)
-            moving_img = nib.load(moving_path)
-            fixed_affine = fixed_img.affine
-            moving_affine = moving_img.affine
-            
-            # fixed_voxel -> world_fixed (fixed_affine)
-            # world_fixed -> world_moving (我们需要的是这个，但transform_ras是反的)
-            # world_moving -> moving_voxel (inv(moving_affine))
-            
-            # transform_ras 是 moving -> fixed
-            # 所以 inv(transform_ras) 是 fixed -> moving
-            # 在物理空间中: world_moving = inv(transform_ras) @ world_fixed
-            
-            # voxel变换:
-            # moving_voxel = inv(moving_affine) @ world_moving
-            #             = inv(moving_affine) @ inv(transform_ras) @ world_fixed
-            #             = inv(moving_affine) @ inv(transform_ras) @ fixed_affine @ fixed_voxel
-            
-            voxel_transform = np.linalg.inv(moving_affine) @ np.linalg.inv(transform_ras) @ fixed_affine
-            
-            return voxel_transform
-            
-        except Exception as e:
-            print(f"  配准失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def _resample_with_sitk(self, label_path: str, ref_img_path: str,
-                            transform: np.ndarray, output_path: str,
-                            interpolation: str = 'nearest'):
-        """
-        使用SimpleITK进行重采样 (已弃用，保留备用)
-        """
-        pass
+        finally:
+            # 清理临时目录
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                if temp_dir in self.temp_dirs:
+                    self.temp_dirs.remove(temp_dir)
     
     def process_case(self, case_id: str) -> dict:
         """
@@ -485,18 +530,21 @@ class NiftiOperator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='NIfTI空间映射工具 - 将标签从预处理空间映射到原始DICOM空间'
+        description='NIfTI空间映射工具 - 将标签从预处理空间映射到原始DICOM空间（MNI152中间空间）'
     )
     parser.add_argument('--source_dir', type=str,
                         default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/UIH164',
                         help='数据根目录')
+    parser.add_argument('--mni152_path', type=str,
+                        default=DEFAULT_MNI152_PATH,
+                        help='MNI152模板路径')
     parser.add_argument('--case_ids', type=str, nargs='+',
                         default=None,
                         help='指定处理的case ID列表')
     
     args = parser.parse_args()
     
-    operator = NiftiOperator(source_dir=args.source_dir)
+    operator = NiftiOperator(source_dir=args.source_dir, mni152_path=args.mni152_path)
     operator.run(case_ids=args.case_ids)
 
 
