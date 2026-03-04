@@ -1,10 +1,10 @@
 { 
-  'logdir': '', # Working directory for the experiment
-  'data_dir': '', # Path for the data
-  'jsondir': '', # Path for the json files
+  'logdir': '/home/tenoke4090/B_WorkPath/mrqs/wholebrainSeg/logs', # Working directory for the experiment
+  'data_dir': '/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset', # Path for the data
+  'jsondir': '/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/json', # Path for the json files
   'use_pretrained': '', # Path to the pretrained model
   'fold': 0,
-  'num_classes': 133,
+  'num_classes':96 ,
   'model_type': 'base',
   'patch_size': 4,
   'depth': [2, 2, 8],

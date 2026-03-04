@@ -307,7 +307,7 @@ class UNesT(nn.Module):
         # 进一步提取深层特征
         # 输入: (B, 512, 6, 6, 6) → 输出: (B, 1024, 3, 3, 3)
         self.encoder10 = Convolution(
-            dimensions=3,
+            spatial_dims=3,
             in_channels=32*feature_size,       # 512
             out_channels=64*feature_size,       # 1024
             strides=2,                          # 下采样2倍
@@ -580,7 +580,7 @@ class UNesT_ticv(nn.Module):
 
         # 额外下采样层
         self.encoder10 = Convolution(
-            dimensions=3,
+            spatial_dims=3,
             in_channels=32*feature_size,
             out_channels=64*feature_size,
             strides=2,

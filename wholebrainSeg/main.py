@@ -128,7 +128,7 @@ def main(cfig, device):
             - opt: str, 优化器类型（'adam'/'adamw'/'sgd'）
             - lrdecay: bool, 是否使用学习率衰减
             - roi_x/y/z: int, 训练ROI尺寸
-            - sw_batch_size: int, 滑动窗口推理批次大小
+            - sw_batch_size: int, 滑动窗口推理批次大小 
         device: torch.device, 训练设备（CPU或CUDA）
     
     Returns:
@@ -204,7 +204,7 @@ def main(cfig, device):
                 scheduler.step()
             optimizer.zero_grad()
             epoch_iterator.set_description("Training (%d / %d Steps) (loss=%2.5f)" % (global_step, cfig['num_steps'], loss))
-            writer.add_scalar("train/loss", scalar_value=loss, global_step=global_step)
+            writer.add_scalar("train/loss", scalar_value=loss.item(), global_step=global_step)
 
             global_step += 1
             if global_step % cfig['eval_num'] == 0:
@@ -364,7 +364,7 @@ if __name__ == '__main__':
         cfig = yaml.safe_load(f)
     
     # 设置训练设备（优先使用CUDA）
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
     # 启动训练
     main(cfig, device)

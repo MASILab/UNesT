@@ -4,12 +4,12 @@
   'jsondir': '', # Path for the json files
   'use_pretrained': '', # Path to the pretrained model
   'fold': 0,
+  'num_classes': 96,
   'model_type': 'large',
   'patch_size': 4,
   'depth': [2, 2, 20],
   'embed_dims': [192, 384, 768],
   'num_heads': [6, 12, 24],
-  'num_classes': 133,
   'pos_embedd': 'perceptron',
   'num_steps': 50000,
   'lr': 0.00001,

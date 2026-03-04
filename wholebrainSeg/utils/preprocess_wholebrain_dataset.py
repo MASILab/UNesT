@@ -20,10 +20,10 @@
     /home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/
     ├── train/
     │   ├── images/                   # 训练图像
-    │   │   ├── 76384925062202.nii.gz
+    │   │   ├── 76384925062202.nii.gz（76384925062202/c_results/brain_preproc_img.nii.gz）
     │   │   └── ...
-    │   └── labels/                   # 训练标签
-    │       ├── 76384925062202_seg.nii.gz
+    │   └── labels/                   # 训练标签（
+    │       ├── 76384925062202_seg.nii.gz76384925062202/c_results/cleanup_labelmap96_src.nii.gz）
     │       └── ...
     ├── val/
     │   ├── images/
@@ -256,7 +256,7 @@ class WholeBrainDatasetPreprocessor:
             data = self._normalize_intensity(data)
             
             # 可选：裁剪前景（减少背景区域）
-            # data, affine = self._crop_foreground(data, affine)
+            data, affine = self._crop_foreground(data, affine)
         
         # 保存处理后的图像
         nii_out = nib.Nifti1Image(data.astype(np.float32 if not is_label else np.int32), affine)
@@ -279,6 +279,8 @@ class WholeBrainDatasetPreprocessor:
             std = data[mask].std()
             if std > 0:
                 data[mask] = (data[mask] - mean) / std
+                # Z-score 后平移到非负
+                data[mask] = data[mask] - data[mask].min()  # 平移到非负
         return data
     
     def _crop_foreground(self, data: np.ndarray, affine: np.ndarray):
@@ -364,9 +366,7 @@ class WholeBrainDatasetPreprocessor:
         # 查找图像文件
         # 优先使用预处理好的图像
         image_candidates = [
-            os.path.join(results_dir, 'brain_preproc_img.nii.gz'),
-            os.path.join(results_dir, 'cropped_img.nii.gz'),
-            os.path.join(results_dir, '1000_image_0000.nii.gz'),
+            os.path.join(results_dir, 'brain_preproc_img.nii.gz')
         ]
         
         image_path = None
@@ -387,8 +387,7 @@ class WholeBrainDatasetPreprocessor:
         
         # 查找标签文件
         label_candidates = [
-            os.path.join(results_dir, 'cleanup_labelmap96_src.nii.gz'),
-            os.path.join(results_dir, 'cimage.nii.gz'),
+            os.path.join(case_dir, 'c_results','cleanup_labelmap96_src.nii.gz')
         ]
         
         label_path = None
@@ -417,7 +416,7 @@ class WholeBrainDatasetPreprocessor:
             item_path = os.path.join(self.source_dir, item)
             if os.path.isdir(item_path) and not item.startswith('.'):
                 # 排除已经划分好的目录
-                if item not in ['train', 'val', 'test', 'UIH164']:
+                if item not in ['train', 'val', 'test']:
                     all_cases.append(item)
         
         print(f"发现 {len(all_cases)} 个case")
@@ -439,7 +438,9 @@ class WholeBrainDatasetPreprocessor:
             return
         
         # 随机划分数据集
+        # 设置随机种子，确保每次运行产生相同的随机序列
         np.random.seed(self.random_seed)
+        # 原地打乱有效病例列表顺序
         np.random.shuffle(valid_cases)
         
         n_total = len(valid_cases)
@@ -533,7 +534,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='全脑分割数据集预处理')
     parser.add_argument('--source_dir', type=str,
-                        default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset',
+                        default='/home/tenoke4090/B_WorkPath/mrqs/UIH164',
                         help='原始数据根目录')
     parser.add_argument('--output_dir', type=str,
                         default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset',

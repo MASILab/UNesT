@@ -186,7 +186,7 @@ class UNesT(nn.Module):
         )
 
         self.encoder10 = Convolution(
-            dimensions=3,
+            spatial_dims=3,
             in_channels=48*feature_size,
             out_channels=96*feature_size,
             strides=2,
