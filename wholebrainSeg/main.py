@@ -23,6 +23,8 @@ from monai.inferers import sliding_window_inference
 from monai.transforms import AsDiscrete,Activations,Compose
 from tqdm import tqdm
 from utils.data_utils import get_loader
+import gc  # 垃圾回收模块
+import datetime
 
 from optimizers.lr_scheduler import WarmupCosineSchedule
 
@@ -173,44 +175,91 @@ def main(cfig, device):
         """
         model.train()
         epoch_iterator = tqdm(train_loader,desc="Training (X / X Steps) (loss=X.X)",dynamic_ncols=True)
+        
+        # 混合精度训练
+        use_amp = cfig.get('amp', False)
+        scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+        
         for step, batch in enumerate(epoch_iterator):
             x, y = (batch["image"].to(device), batch["label"].to(device))
-            logit_map = model(x)
+            
+            # 使用混合精度前向传播
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                logit_map = model(x)
+                
+                # 调试信息：检查维度和标签值范围
+                if global_step == 0:
+                    print(f'\n=== 调试信息 ===')
+                    print(f'输入 x shape: {x.shape}')
+                    print(f'标签 y shape: {y.shape}')
+                    print(f'标签 y min: {y.min().item()}, max: {y.max().item()}')
+                    print(f'模型输出 logit_map shape: {logit_map.shape}')
+                    print(f'num_classes: {cfig["num_classes"]}')
+                    print(f'混合精度训练: {use_amp}')
+                    print(f'===============\n')
 
+                try:
+                    loss = loss_function(logit_map, y)
+                except Exception as e:
+                    print(f"损失函数计算错误: {e}")
+                    print(f"尝试使用备用标签格式: y[:,0].long()")
+                    loss = loss_function(logit_map, y[:,0].long())
 
             # training Dice 
             if global_step % 40 == 0:
-                train_pred = torch.softmax(logit_map, 1).detach().cpu().numpy()
-                train_pred = np.argmax(train_pred, axis = 1).astype(np.uint8)
-                train_label = y.detach().cpu().numpy()[:,0,:,:,:]
-                
-                dice_list_sub = []
-                for i in range(1, cfig['num_classes']):
-                    organ_Dice = Dice(train_pred[0] == i, train_label[0] == i)
-                    dice_list_sub.append(organ_Dice)
-                print('Train DSC: {}'.format(np.mean(dice_list_sub)))
-                writer.add_scalar("train/DSC_sample", scalar_value=np.mean(dice_list_sub), global_step=global_step)
+                print(f'GPU显存: {torch.cuda.memory_allocated()/1024**3:.2f}GB / {torch.cuda.max_memory_allocated()/1024**3:.2f}GB')
+                with torch.no_grad():
+                    train_pred = torch.softmax(logit_map.float(), 1).detach().cpu().numpy()
+                    train_pred = np.argmax(train_pred, axis = 1).astype(np.uint8)
+                    train_label = y.detach().cpu().numpy()[:,0,:,:,:]
+                    
+                    dice_list_sub = []
+                    for i in range(1, cfig['num_classes']):
+                        organ_Dice = Dice(train_pred[0] == i, train_label[0] == i)
+                        dice_list_sub.append(organ_Dice)
+                    print('Train DSC: {} ,Current Time:{}'.format(np.mean(dice_list_sub),datetime.datetime.now()))
+                    writer.add_scalar("train/DSC_sample", scalar_value=np.mean(dice_list_sub), global_step=global_step)
+                    del train_pred, train_label, dice_list_sub
 
-            #----------------------------------------
-            try:
-                loss = loss_function(logit_map, y)
-            except:
-
-                loss = loss_function(logit_map, y[:,0].long())
-       
-            loss.backward()
-            optimizer.step()
+            # 使用混合精度反向传播
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            
+            optimizer.zero_grad()
             if cfig['lrdecay']:
                 scheduler.step()
-            optimizer.zero_grad()
-            epoch_iterator.set_description("Training (%d / %d Steps) (loss=%2.5f)" % (global_step, cfig['num_steps'], loss))
+            epoch_iterator.set_description("Training (%d / %d Steps) (loss=%2.5f)" % (global_step, cfig['num_steps'], loss.item()))
             writer.add_scalar("train/loss", scalar_value=loss.item(), global_step=global_step)
 
+            # 释放计算图和临时变量
+            del x, y, logit_map, loss
+            
             global_step += 1
+            
+            # 定期清理GPU缓存（增加频率以提高稳定性）
+            if global_step % 50 == 0:
+                torch.cuda.empty_cache()
+                gc.collect()
+            
             if global_step % cfig['eval_num'] == 0:
-                epoch_iterator_val = tqdm(test_loader, desc="Validate (X / X Steps) (dice=X.X)", dynamic_ncols=True)
+                # 验证前准备：刷新缓冲、清理缓存、同步CUDA
+                sys.stdout.flush()
+                torch.cuda.synchronize()  # 确保所有CUDA操作完成
+                torch.cuda.empty_cache()
+                gc.collect()
+                print(f'\n===== 开始验证 (Step {global_step}) =====')
+                
+                epoch_iterator_val = tqdm(test_loader, desc="Validate (X / X Steps) (dice=X.X)", dynamic_ncols=True, leave=True)
 
                 mean_list = validation(epoch_iterator_val, val_shape_dict)
+                
+                # 验证后清理缓存并切回训练模式
+                torch.cuda.synchronize()  # 确保验证操作全部完成
+                torch.cuda.empty_cache()
+                gc.collect()
+                model.train()
+                print(f'===== 验证完成，继续训练 =====\n')
 
                 writer.add_scalar("ValAvgDice/Dice_avg", scalar_value=np.mean(mean_list), global_step=global_step)
                 for lbl_i in range(cfig['num_classes']-1):
@@ -225,6 +274,7 @@ def main(cfig, device):
                     print('Model Was Saved ! Current Best Dice: {},  Current Dice: {}'.format(dice_val_best, np.mean(mean_list)))
                 else:
                     print('Model Was NOT Saved ! Current Best Dice: {} Current Dice: {}'.format(dice_val_best, dice_val))
+                del mean_list, dice_val
         return global_step, dice_val_best
 
 
@@ -254,10 +304,14 @@ def main(cfig, device):
             for step, batch in enumerate(epoch_iterator_val):
                 val_inputs, val_labels = (batch["image"].to(device), batch["label"].to(device))
                 name = batch["image_meta_dict"]['filename_or_obj'][0].split('/')[-1]
-                val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.2, device=torch.device('cpu'))
+                # # 使用GPU推理，更快；如果显存不足可改回 device=torch.device('cpu')
+                # val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=device)
+                # 使用CPU推理
+                val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=torch.device('cpu'))
                 val_outputs = torch.softmax(val_outputs, 1).detach().cpu().numpy()
                 val_outputs = np.argmax(val_outputs, axis = 1).astype(np.uint8)
                 val_labels = val_labels.detach().cpu().numpy()[:,0,:,:,:]
+                print(f'验证样本: {name}')
 
                 dice_list_sub = []
                 for i in range(1, cfig['num_classes']):
@@ -288,7 +342,7 @@ def main(cfig, device):
     elif cfig['model_type'] == 'large':
         from networks.unest_large_patch_4 import UNesT
     model = UNesT(in_channels=1,
-                out_channels=133,
+                out_channels=cfig['num_classes'],
                 patch_size=cfig['patch_size'],
                 depths=cfig['depth'],
                 num_heads=cfig['num_heads'],
@@ -356,15 +410,64 @@ def main(cfig, device):
     checkpoint = {'global_step': global_step,'state_dict': model.state_dict(),'optimizer': optimizer.state_dict()}
     save_ckp(checkpoint, logdir+'/model_final_epoch.pt')
 
+# ==================== 日志输出重定向 ====================
+class Logger:
+    """
+    同时输出到控制台和文件的日志记录器
+    """
+    def __init__(self, log_path):
+        self.log_path = log_path
+        self.terminal = sys.stdout
+        self.log = open(log_path, 'a', encoding='utf-8')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+    def close(self):
+        self.log.close()
+
 # ==================== 程序入口 ====================
 if __name__ == '__main__':
+    # ==================== 限制线程数（解决多进程死锁问题）====================
+    import os
+    os.environ['OMP_NUM_THREADS'] = '4'
+    os.environ['MKL_NUM_THREADS'] = '4'
+    os.environ['OPENBLAS_NUM_THREADS'] = '4'
+    os.environ['VECLIB_MAXIMUM_THREADS'] = '4'
+    os.environ['NUMEXPR_NUM_THREADS'] = '4'
+    
     # 加载YAML配置文件
-    yaml_file = 'wholebrainSeg/yaml/unest_base.yaml'
+    yaml_file = 'wholebrainSeg/yaml/unest_large.yaml'
     with open(yaml_file, 'r') as f:
         cfig = yaml.safe_load(f)
     
     # 设置训练设备（优先使用CUDA）
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
-    # 启动训练
-    main(cfig, device)
+    # 创建日志目录并重定向输出
+    import sys
+    import datetime
+    logdir = cfig['logdir']
+    os.makedirs(logdir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(logdir, f'training_{timestamp}.log')
+    logger = Logger(log_file)
+    sys.stdout = logger
+    print(f'日志文件: {log_file}')
+    print(f'训练开始时间: {timestamp}')
+    print('=' * 60)
+    
+    try:
+        # 启动训练
+        main(cfig, device)
+    finally:
+        # 恢复标准输出并关闭日志文件
+        sys.stdout = logger.terminal
+        logger.close()
+        print(f'训练完成，日志已保存至: {log_file}')

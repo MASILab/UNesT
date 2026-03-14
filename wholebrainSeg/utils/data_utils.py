@@ -12,7 +12,7 @@ import os
 import nibabel as nb
 from monai.transforms import (
     Activations,
-    AsChannelFirstd,
+    EnsureChannelFirstd,
     AsDiscrete,
     AddChanneld,
     Compose,
@@ -38,7 +38,10 @@ from monai.transforms import (
     CenterSpatialCropd,
     ScaleIntensityRangePercentilesd,
     CropForeground, 
-    RandRotated
+    RandRotated,
+    RandGaussianNoised,
+    RandGaussianSmoothd,
+    RandZoomd
 )
 
 from monai.data import (
@@ -60,31 +63,53 @@ nb.Nifti1Header.quaternion_threshold = -1e-06
 
 def get_loader(cfig):
 
+    # 获取增强概率配置
+    aug = cfig.get('aug_type', {})
+    
     train_transforms = Compose(
         [
-            LoadImaged(keys=["image", "label"]),
-            AddChanneld(keys=["image", "label"]),
+            LoadImaged(keys=["image", "label"], image_only=False),
+            EnsureChannelFirstd(keys=["image", "label"], channel_dim='no_channel'),
             RandSpatialCropd(keys=["image", "label"], roi_size=[
                             cfig['roi_x'], cfig['roi_y'], cfig['roi_z']], random_size=False),
-            RandFlipd(keys=["image", "label"], prob=cfig['aug_type']['flip'], spatial_axis=0),
-            RandFlipd(keys=["image", "label"], prob=cfig['aug_type']['flip'], spatial_axis=1),
-            RandFlipd(keys=["image", "label"], prob=cfig['aug_type']['flip'], spatial_axis=2),
+            # 翻转增强
+            RandFlipd(keys=["image", "label"], prob=aug.get('flip', 0.5), spatial_axis=0),
+            RandFlipd(keys=["image", "label"], prob=aug.get('flip', 0.5), spatial_axis=1),
+            RandFlipd(keys=["image", "label"], prob=aug.get('flip', 0.5), spatial_axis=2),
             
-            RandRotated(keys=["image", "label"], prob=cfig['aug_type']['rotate'], range_x=[-0.4, 0.4], mode=['bilinear', 'nearest']),
-            RandRotated(keys=["image", "label"], prob=cfig['aug_type']['rotate'], range_y=[-0.4, 0.4], mode=['bilinear', 'nearest']),
-            RandRotated(keys=["image", "label"], prob=cfig['aug_type']['rotate'], range_z=[-0.4, 0.4], mode=['bilinear', 'nearest']),
+            # 旋转增强（增加旋转角度范围）
+            RandRotated(keys=["image", "label"], prob=aug.get('rotate', 0.3), range_x=[-0.5, 0.5], mode=['bilinear', 'nearest']),
+            RandRotated(keys=["image", "label"], prob=aug.get('rotate', 0.3), range_y=[-0.5, 0.5], mode=['bilinear', 'nearest']),
+            RandRotated(keys=["image", "label"], prob=aug.get('rotate', 0.3), range_z=[-0.5, 0.5], mode=['bilinear', 'nearest']),
+            
+            # 缩放增强
+            RandZoomd(keys=["image", "label"], prob=aug.get('zoom', 0.2), 
+                     min_zoom=0.9, max_zoom=1.1, mode=['trilinear', 'nearest'], keep_size=True),
 
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True, dtype=np.float32), #
-            RandScaleIntensityd(keys="image", factors=0.1, prob=cfig['aug_type']['scale_intensity']),
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=cfig['aug_type']['shif_intensity']),
+            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True, dtype=np.float32),
+            
+            # 强度增强
+            RandScaleIntensityd(keys="image", factors=0.15, prob=aug.get('scale_intensity', 0.3)),
+            RandShiftIntensityd(keys="image", offsets=0.15, prob=aug.get('shift_intensity', 0.3)),
+            
+            # 新增增强：高斯噪声
+            RandGaussianNoised(keys="image", prob=aug.get('gaussian_noise', 0.2), std=0.05),
+            
+            # 新增增强：高斯平滑
+            RandGaussianSmoothd(keys="image", prob=aug.get('gaussian_smooth', 0.2), 
+                              sigma_x=(0.5, 1.0), sigma_y=(0.5, 1.0), sigma_z=(0.5, 1.0)),
+            
+            # 新增增强：对比度调整
+            RandAdjustContrastd(keys="image", prob=aug.get('contrast', 0.3), gamma=(0.8, 1.2)),
+            
             ToTensord(keys=["image", "label"]),
         ]
     )
 
     val_transforms = Compose(
         [
-            LoadImaged(keys=["image", "label"]),
-            AddChanneld(keys=["image", "label"]),
+            LoadImaged(keys=["image", "label"], image_only=False),
+            EnsureChannelFirstd(keys=["image", "label"], channel_dim='no_channel'),
             NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True, dtype=np.float32),
             ToTensord(keys=["image", "label"]),
         ]
@@ -97,14 +122,30 @@ def get_loader(cfig):
     val_files = load_decathlon_datalist(
         jsonlist, True, "validation", base_dir=data_dir)
 
-    train_ds = SmartCacheDataset(
-        data=datalist, transform=train_transforms, replace_rate=1.0, cache_num=30)
+    # 从配置读取参数，采用最保守的稳定配置
+    cache_rate = cfig.get('cache_rate', 0.0)  # 默认禁用缓存以减少内存占用
+    num_workers = cfig.get('num_workers', 0)  # 默认单进程
+    
+    train_ds = CacheDataset(
+        data=datalist, 
+        transform=train_transforms, 
+        cache_rate=cache_rate, 
+        num_workers=num_workers
+    )
+    
+    # DataLoader配置：最保守配置确保稳定性
     train_loader = DataLoader(
-        train_ds, batch_size=cfig['batch_size'], shuffle=True)
+        train_ds, 
+        batch_size=cfig['batch_size'], 
+        shuffle=True, 
+        num_workers=num_workers, 
+        pin_memory=False,  # 禁用pin_memory减少内存压力
+        persistent_workers=False
+    )
 
     val_ds = CacheDataset(
-        data=val_files, transform=val_transforms, cache_rate=1.0, num_workers=4)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False)
+        data=val_files, transform=val_transforms, cache_rate=0.0, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0, pin_memory=False)
 
     val_shape_dict = {}
 
