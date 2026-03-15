@@ -534,7 +534,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='全脑分割数据集预处理')
     parser.add_argument('--source_dir', type=str,
-                        default='/home/tenoke4090/B_WorkPath/mrqs/UIH164',
+                        default='/home/tenoke4090/B_WorkPath/mrqs/all_data',
                         help='原始数据根目录')
     parser.add_argument('--output_dir', type=str,
                         default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset',
