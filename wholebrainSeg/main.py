@@ -322,6 +322,11 @@ def main(cfig, device):
                 metric_values.append(dice_list_sub)
                 epoch_iterator_val.set_description("Validate (%d / %d Steps) (dice_mean=%2.5f)" % (global_step, 5.0, dice_mean))
 
+                # 每个验证样本处理完后清理内存，防止累积导致段错误
+                del val_outputs, val_inputs, val_labels
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                gc.collect()
+
             mean_list = np.mean(metric_values, axis=0)
 
         return mean_list
