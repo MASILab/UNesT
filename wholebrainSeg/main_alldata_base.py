@@ -309,9 +309,9 @@ def main(cfig, device):
                 val_inputs, val_labels = (batch["image"].to(device), batch["label"].to(device))
                 name = batch["image_meta_dict"]['filename_or_obj'][0].split('/')[-1]
                 # # 使用GPU推理，更快；如果显存不足可改回 device=torch.device('cpu')
-                # val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=device)
+                val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=device)
                 # 使用CPU推理
-                val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=torch.device('cpu'))
+                # val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model, overlap=0.5, device=torch.device('cpu'))
                 val_outputs = torch.softmax(val_outputs, 1).detach().cpu().numpy()
                 val_outputs = np.argmax(val_outputs, axis = 1).astype(np.uint8)
                 val_labels = val_labels.detach().cpu().numpy()[:,0,:,:,:]
@@ -410,6 +410,24 @@ def main(cfig, device):
     train_loader, test_loader, val_shape_dict = get_loader(cfig)
     global_step = 0
     dice_val_best = 0.0
+
+    # ==================== 从checkpoint恢复训练 ====================
+    resume_checkpoint = cfig.get('resume', '')
+    if resume_checkpoint == 'auto':
+        resume_checkpoint = os.path.join(logdir, 'model.pt')
+    
+    if resume_checkpoint and os.path.exists(resume_checkpoint):
+        print(f'正在从checkpoint恢复: {resume_checkpoint}')
+        ckpt = torch.load(resume_checkpoint, map_location=device)
+        model.load_state_dict(ckpt['state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        global_step = ckpt['global_step']
+        print(f'已恢复到 Step {global_step}')
+        # 恢复学习率调度器状态
+        if cfig['lrdecay'] and global_step > 0:
+            for _ in range(global_step):
+                scheduler.step()
+            print(f'学习率调度器已同步到 Step {global_step}')
 
     # ==================== 训练循环 ====================
     while global_step < cfig['num_steps']:
