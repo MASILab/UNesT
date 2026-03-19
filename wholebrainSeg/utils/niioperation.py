@@ -741,7 +741,7 @@ def main():
         description='NIfTI空间映射工具 - 将标签从预处理空间映射到原始DICOM空间'
     )
     parser.add_argument('--source_dir', type=str,
-                        default='/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/UIH164',
+                        default='/home/tenoke4090/B_WorkPath/mrqs/all_data',
                         help='数据根目录')
     parser.add_argument('--mni152_path', type=str,
                         default=DEFAULT_MNI152_PATH,

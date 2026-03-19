@@ -44,9 +44,14 @@ import argparse
 import sys
 import ants  # ANTs医学图像处理库
 from pyrobex.robex import robex  # ROBEX颅骨剥离工具
-from intensity_normalization.normalize.fcm import FCMNormalize  # FCM强度归一化
-from intensity_normalization.typing import Modality, TissueType
+from networks.unest_large_patch_4 import UNesT
+from intensity_normalization.normalizers.individual.fcm import FCMNormalizer
+from intensity_normalization.domain.models import TissueType
+from intensity_normalization.adapters.images import NumpyImageAdapter
 from skimage import measure  # 图像处理工具
+import time
+from numba import njit
+from scipy.ndimage import binary_dilation, binary_erosion
 
 # 禁止Python写入.pyc字节码文件
 sys.dont_write_bytecode = True
@@ -54,6 +59,68 @@ sys.dont_write_bytecode = True
 
 # ==================== 辅助函数 ====================
 
+sys.dont_write_bytecode = True
+
+def allFilter(in_arr):
+    arr_tmp = in_arr.copy()
+    arr_tmp[arr_tmp>0] = 1
+    labels,num = measure.label(arr_tmp,background= 0,connectivity=1,return_num= True)
+    props = measure.regionprops(labels)
+    areas = [props[i].area for i in range(len(props))]
+    sorted_id = sorted(range(len(areas)), key=lambda k: areas[k], reverse=True)
+    bool_arr = labels == (sorted_id[0] + 1)
+    if len(areas) > 1:
+        if 0.1 > areas[sorted_id[1]]/areas[sorted_id[0]] > 0.008:
+            print('area')
+            bool_arr2 = labels == (sorted_id[1] + 1)
+            bool_arr = bool_arr + bool_arr2
+    in_arr[~bool_arr] = 0
+    return in_arr
+
+def labelFilter(in_arr):
+    bool_arr = np.zeros(in_arr.shape)
+    for label in range(1, 97):
+        label_arr = np.zeros(in_arr.shape)
+        label_arr[in_arr == label] = 1
+        if label_arr.any():
+            labels, num = measure.label(label_arr, background=0, connectivity=1, return_num=True)
+            props = measure.regionprops(labels)
+            areas = [props[i].area for i in range(len(props))]
+            sorted_id = sorted(range(len(areas)), key=lambda k: areas[k], reverse=True)
+            label_bool_arr = labels == (sorted_id[0] + 1)
+            bool_arr = bool_arr + label_arr - label_bool_arr
+    coo_arr = np.where(bool_arr == 1)
+    return coo_arr
+
+@njit
+def medianFilter(in_arr, coo_arr,s = 15):
+    edge = int((s - 1) / 2)
+    new_arr = in_arr.copy()
+    new_tmp_arr = in_arr.copy()
+    for i in range(len(coo_arr[0])):
+        x1 = coo_arr[0][i] - edge
+        x2 = coo_arr[0][i] + edge + 1
+        y1 = coo_arr[1][i] - edge
+        y2 = coo_arr[1][i] + edge + 1
+        z1 = coo_arr[2][i] - edge
+        z2 = coo_arr[2][i] + edge + 1
+        if x1 < 0:
+            x1 = 0
+        if x2 > in_arr.shape[0]:
+            x2 = in_arr.shape[0]
+        if y1 < 0:
+            y1 = 0
+        if y2 > in_arr.shape[1]:
+            y2 = in_arr.shape[1]
+        if z1 < 0:
+            z1 = 0
+        if z2 > in_arr.shape[2]:
+            z2 = in_arr.shape[2]
+        # new_arr[coo_arr[0][i], coo_arr[1][i], coo_arr[2][i]] = np.nanmedian(new_tmp_arr[x1:x2, y1:y2, z1:z2])
+        tmp_arry = new_tmp_arr[x1:x2, y1:y2, z1:z2].flatten()
+        tmp_arry=tmp_arry[tmp_arry!=0]
+        new_arr[coo_arr[0][i], coo_arr[1][i], coo_arr[2][i]] = np.median(tmp_arry)
+    return new_arr
 def create_nonzero_mask(data):
     """
     创建非零区域掩码
@@ -173,17 +240,26 @@ img_transform = transforms.Compose(
 # 滑动窗口的ROI大小（与训练时一致）
 roi_size = (96, 96, 96)
 
-# FCM强度归一化器
+# FCM强度归一化器（已弃用，改用Z-score标准化）
 # 基于白质(WM)的模糊C均值聚类进行归一化
 # 这种方法可以使不同扫描的强度分布一致
-fcm_norm = FCMNormalize(tissue_type=TissueType.WM)
 
 # 获取所有测试文件
 dataAll = os.listdir(args.data_dir)
 
 # ==================== 模型加载 ====================
 # 加载完整的PyTorch模型（包含结构和权重）
-model = torch.load(os.path.join(args.model_path, 'new_norm_rstrip_matexp_dicom_model.pth'))
+# 初始化UNesT模型 (使用large配置以匹配预训练权重)
+model = UNesT(
+    in_channels=1,      # 单通道MRI图像
+    out_channels=97,   # 97类输出（96个脑区+背景）
+    patch_size=4,
+    depths=[2, 2, 20],  # 与训练配置一致
+    num_heads=[6, 12, 24],
+    embed_dim=[192, 384, 768]
+)
+ckpt = torch.load(os.path.join(args.model_path, 'new_norm_rstrip_matexp_dicom_model.pt'))
+model.load_state_dict(ckpt['state_dict'], strict=True)
 model.to(device)
 model.eval()  # 设置为评估模式
 
@@ -239,12 +315,20 @@ with torch.no_grad():  # 禁用梯度计算以节省内存
         # 使用模糊C均值聚类基于白质进行归一化
         # 这一步对于跨扫描仪、跨协议的数据一致性很重要
         print("  - 强度归一化中...")
-        data_img = fcm_norm(data_img)
-        
+        # fcm标准化（在颅骨剥离后的mask内）
+        # FCMNormalizer 需要 ImageProtocol 对象，使用 NumpyImageAdapter 包装
+        fcm_norm = FCMNormalizer(tissue_type=TissueType.WM)
+        # 使用适配器包装numpy数组
+        img_adapter = NumpyImageAdapter(data_img)
+        # 执行FCM归一化
+        img_adapter_norm = fcm_norm(img_adapter)
+        # 提取归一化后的numpy数组
+        data_img = img_adapter_norm.get_data()
         # 保存归一化后的图像
-        nib.Nifti1Image(data_img, data_affine).to_filename(
-            os.path.join(args.results_dir, 'norm_' + ele)
-        )
+        nib.Nifti1Image(data_img, data_affine).to_filename(os.path.join(args.results_dir,'norm_'+ele))
+        tmp_img = data_img.copy()
+
+
         
         # ============ 步骤5: 模型推理 ============
         print("  - 模型推理中...")
@@ -281,23 +365,18 @@ with torch.no_grad():  # 禁用梯度计算以节省内存
         # 只保留最大的连通区域
         print("  - 后处理中...")
         
-        # 创建二值掩码（所有分割区域）
-        img_tmp = data_img.copy()
-        img_tmp[img_tmp > 0] = 1
+        time_start = time.time()  # 记录开始时间
+        data_img[tmp_img==0] = 0
+        data_img = allFilter(data_img)
         
-        # 使用skimage进行连通域标记
-        # labels: 标记图像，每个连通域有唯一标签
-        # num: 连通域数量
-        labels, num = measure.label(img_tmp, background=0, return_num=True)
+ 
         
-        # 计算每个连通域的属性（面积等）
-        props = measure.regionprops(labels)
-        areas = [props[i].area for i in range(len(props))]
+        coo_arr = labelFilter(data_img)
+        data_img = medianFilter(data_img,coo_arr)
         
-        # 只保留最大的连通域
-        # np.argmax(areas) + 1 因为标签从1开始
-        data_img[labels != np.argmax(areas) + 1] = 0
-        
+        time_end = time.time()  # 记录结束时间
+        time_sum = time_end - time_start  # 计算的时间差为程序的执行时间，单位为秒/s
+        print(f"  后处理耗时: {time_sum:.2f}秒")
         # ============ 步骤7: 保存最终结果 ============
         output_path = os.path.join(args.results_dir, 'label_' + ele)
         nib.Nifti1Image(data_img, data_affine).to_filename(output_path)
