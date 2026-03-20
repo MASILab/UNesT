@@ -150,12 +150,16 @@ def labelRemian(in_arr):
             bool_arr = labels == (sorted_id[0] + 1)
             # 如果存在多个连通域，检查是否需要保留第二大的
             if len(areas) > 1:
-                # 如果第二大连通域面积占第一大的0.8%-10%，也保留
+                # 如果占比小于0.005，面积大于50的不保留
                 # 这样可以保留一些小的但是合理的分割区域
-                if 0.1 > areas[sorted_id[1]]/areas[sorted_id[0]] > 0.008:
-                    print('存在第二大连通域label',label)
-                    bool_arr2 = labels == (sorted_id[1] + 1)
-                    bool_arr = bool_arr + bool_arr2
+                if areas[sorted_id[1]]/areas[sorted_id[0]] < 0.003 and areas[sorted_id[1]] > 50:
+                    bool_arr[labels == (sorted_id[1] + 1)] = 0
+                    print('存在第二大连通域,label:',label,'占比:',areas[sorted_id[1]]/areas[sorted_id[0]],'面积:',areas[sorted_id[1]])
+
+                # if 0.1 > areas[sorted_id[1]]/areas[sorted_id[0]] > 0.001 and areas[sorted_id[1]]:
+                #     print('存在第二大连通域,label:',label,'占比:',areas[sorted_id[1]]/areas[sorted_id[0]],'面积:',areas[sorted_id[1]])
+                #     bool_arr2 = labels == (sorted_id[1] + 1)
+                #     bool_arr = bool_arr + bool_arr2
             out_arr[bool_arr] = label
     return out_arr
 
@@ -717,6 +721,7 @@ with torch.no_grad():  # 禁用梯度计算以节省内存
         data_img = labelRemian(data_img)
         coo_arr = labelFilter(data_img)
         data_img = medianFilter(data_img,coo_arr)
+
         
         time_end = time.time()  # 记录结束时间
         time_sum = time_end - time_start  # 计算的时间差为程序的执行时间，单位为秒/s
