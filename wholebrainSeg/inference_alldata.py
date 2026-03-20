@@ -72,48 +72,200 @@ except ImportError:
 # ==================== 辅助函数 ====================
 
 def allFilter(in_arr):
+    """
+    全局连通域过滤 - 保留整个分割结果的最大连通域
+    
+    功能：
+        对整个分割结果进行连通域分析，保留最大的连通区域，
+        去除背景中的孤立噪点和小区域。
+        如果第二大连通域面积在第一大的0.8%-10%之间，也会保留。
+    
+    Args:
+        in_arr: numpy.ndarray, 形状为(H, W, D)的分割结果数组
+    
+    Returns:
+        numpy.ndarray: 过滤后的分割结果，非连通区域的值被设为0
+    
+    实现逻辑：
+        1. 将所有非零值合并为二值图像
+        2. 使用连通域分析标记所有连通区域
+        3. 找到面积最大的连通域并保留
+        4. 可选保留第二大连通域（满足面积比例条件）
+        5. 将其他区域的值设为0
+    """
+    # 创建副本，将所有非零值统一为1，生成二值图像
     arr_tmp = in_arr.copy()
     arr_tmp[arr_tmp>0] = 1
-    labels,num = measure.label(arr_tmp,background= 0,connectivity=1,return_num= True)
+    
+    # 连通域分析：标记所有连通区域使用label表示
+    # connectivity=1 表示6邻域连通（面连通）
+    labels, num = measure.label(arr_tmp, background=0, connectivity=1, return_num=True)
+    
+    # 计算每个连通域的属性（面积等）
     props = measure.regionprops(labels)
     areas = [props[i].area for i in range(len(props))]
+    
+    # 按面积降序排序，获取排序后的索引
     sorted_id = sorted(range(len(areas)), key=lambda k: areas[k], reverse=True)
+    
+    # 保留最大连通域（label索引从1开始）
     bool_arr = labels == (sorted_id[0] + 1)
+    
+    # 如果存在多个连通域，检查是否需要保留第二大的
     if len(areas) > 1:
+        # 如果第二大连通域面积占第一大的0.8%-10%，也保留
+        # 这样可以保留一些小的但是合理的分割区域
         if 0.1 > areas[sorted_id[1]]/areas[sorted_id[0]] > 0.008:
             print('area')
             bool_arr2 = labels == (sorted_id[1] + 1)
             bool_arr = bool_arr + bool_arr2
+    
+    # 将不在保留区域内的体素设为0
     in_arr[~bool_arr] = 0
     return in_arr
-
-def labelFilter(in_arr):
-    bool_arr = np.zeros(in_arr.shape)
+def labelRemian(in_arr):
+    """保留每个label最大的连通域
+    输入：
+    in_arr: 输入的数组
+    Args:
+        in_arr (_type_): _description_
+    """
+    ### 初始化输出数组
+    out_arr = np.zeros(in_arr.shape)
+    # 遍历所有96个标签类别（1-96）
     for label in range(1, 97):
+        # 为当前标签创建二值掩码
         label_arr = np.zeros(in_arr.shape)
         label_arr[in_arr == label] = 1
+        
+        # 如果该标签存在体素
         if label_arr.any():
+            # 对该标签进行连通域分析
             labels, num = measure.label(label_arr, background=0, connectivity=1, return_num=True)
             props = measure.regionprops(labels)
             areas = [props[i].area for i in range(len(props))]
+            
+            # 按面积降序排序
             sorted_id = sorted(range(len(areas)), key=lambda k: areas[k], reverse=True)
+            bool_arr = labels == (sorted_id[0] + 1)
+            # 如果存在多个连通域，检查是否需要保留第二大的
+            if len(areas) > 1:
+                # 如果第二大连通域面积占第一大的0.8%-10%，也保留
+                # 这样可以保留一些小的但是合理的分割区域
+                if 0.1 > areas[sorted_id[1]]/areas[sorted_id[0]] > 0.008:
+                    print('存在第二大连通域label',label)
+                    bool_arr2 = labels == (sorted_id[1] + 1)
+                    bool_arr = bool_arr + bool_arr2
+            out_arr[bool_arr] = label
+    return out_arr
+
+
+
+def labelFilter(in_arr):
+    """
+    标签级连通域过滤 - 对每个标签类别保留最大连通域
+    
+    功能：
+        对每个标签类别（1-96）分别进行连通域分析，
+        只保留该标签内部的最大连通区域。
+        返回需要中值滤波处理的坐标点（被移除的小连通域）。
+    
+    Args:
+        in_arr: numpy.ndarray, 形状为(H, W, D)的分割结果数组
+                值为0-96，0表示背景，1-96表示不同的脑区标签
+    
+    Returns:
+        tuple: 需要中值滤波的坐标点数组
+               形状为(x_coords, y_coords, z_coords)
+               这些点位于各标签的小连通域中，后续会被平滑处理
+    
+    实现逻辑：
+        1. 遍历所有96个标签类别
+        2. 对每个标签创建二值掩码
+        3. 找到该标签的最大连通域
+        4. 标记该标签内其他小连通域的坐标
+        5. 返回所有小连通域的坐标，供后续中值滤波使用
+    """
+    # 初始化布尔数组，用于标记需要滤波的点
+    bool_arr = np.zeros(in_arr.shape)
+    
+    # 遍历所有96个标签类别（1-96）
+    for label in range(1, 97):
+        # 为当前标签创建二值掩码
+        label_arr = np.zeros(in_arr.shape)
+        label_arr[in_arr == label] = 1
+        
+        # 如果该标签存在体素
+        if label_arr.any():
+            # 对该标签进行连通域分析
+            labels, num = measure.label(label_arr, background=0, connectivity=1, return_num=True)
+            props = measure.regionprops(labels)
+            areas = [props[i].area for i in range(len(props))]
+            
+            # 按面积降序排序
+            sorted_id = sorted(range(len(areas)), key=lambda k: areas[k], reverse=True)
+            
+            # 保留最大连通域
             label_bool_arr = labels == (sorted_id[0] + 1)
+            
+            # 标记该标签内的小连通域
+            # bool_arr + label_arr 标记该标签的所有区域
+            # - label_bool_arr 移除最大连通域
+            # 结果：只保留小连通域的标记
             bool_arr = bool_arr + label_arr - label_bool_arr
+    
+    # 获取所有小连通域的坐标
     coo_arr = np.where(bool_arr == 1)
     return coo_arr
 
 @njit
-def medianFilter(in_arr, coo_arr,s = 15):
+def medianFilter(in_arr, coo_arr, s=15):
+    """
+    中值滤波 - 对指定坐标点进行局部中值滤波平滑
+    
+    功能：
+        对labelFilter返回的小连通域坐标点进行中值滤波，
+        使用周围邻域的中值替代原值，实现平滑效果。
+        使用Numba的@njit装饰器加速计算。
+    
+    Args:
+        in_arr: numpy.ndarray, 形状为(H, W, D)的分割结果数组
+        coo_arr: tuple, 需要滤波的坐标点数组，格式为(x_coords, y_coords, z_coords)
+        s: int, 立方体邻域窗口大小，默认15（即15×15×15的窗口）
+    
+    Returns:
+        numpy.ndarray: 滤波后的分割结果数组
+    
+    实现逻辑：
+        1. 对每个需要处理的坐标点
+        2. 提取以该点为中心的s×s×s立方体邻域
+        3. 计算邻域内非零值的中值
+        4. 用中值替代原坐标点的值
+        5. 处理边界情况（窗口超出图像范围）
+    
+    注意：
+        - 使用@njit装饰器进行JIT编译加速
+        - 忽略邻域中的零值（背景）
+        - 窗口大小s必须为奇数
+    """
+    # 计算窗口半径
     edge = int((s - 1) / 2)
+    
+    # 创建结果数组的副本
     new_arr = in_arr.copy()
     new_tmp_arr = in_arr.copy()
+    
+    # 遍历所有需要滤波的坐标点
     for i in range(len(coo_arr[0])):
+        # 计算立方体邻域的边界索引
         x1 = coo_arr[0][i] - edge
         x2 = coo_arr[0][i] + edge + 1
         y1 = coo_arr[1][i] - edge
         y2 = coo_arr[1][i] + edge + 1
         z1 = coo_arr[2][i] - edge
         z2 = coo_arr[2][i] + edge + 1
+        
+        # 边界检查，确保索引不越界
         if x1 < 0:
             x1 = 0
         if x2 > in_arr.shape[0]:
@@ -126,10 +278,16 @@ def medianFilter(in_arr, coo_arr,s = 15):
             z1 = 0
         if z2 > in_arr.shape[2]:
             z2 = in_arr.shape[2]
-        # new_arr[coo_arr[0][i], coo_arr[1][i], coo_arr[2][i]] = np.nanmedian(new_tmp_arr[x1:x2, y1:y2, z1:z2])
+        
+        # 提取邻域并展平为一维数组
         tmp_arry = new_tmp_arr[x1:x2, y1:y2, z1:z2].flatten()
-        tmp_arry=tmp_arry[tmp_arry!=0]
+        
+        # 过滤掉零值（只考虑前景区域的标签）
+        tmp_arry = tmp_arry[tmp_arry != 0]
+        
+        # 计算中值并替换原坐标点的值
         new_arr[coo_arr[0][i], coo_arr[1][i], coo_arr[2][i]] = np.median(tmp_arry)
+    
     return new_arr
 def create_nonzero_mask(data):
     """
@@ -352,6 +510,7 @@ def crop_foreground( data: np.ndarray, affine: np.ndarray, return_bounds: bool =
 
 
 # ==================== 命令行参数解析 ====================
+time_start = time.time()  # 记录开始时间
 parser = argparse.ArgumentParser(description='全脑分割推理脚本')
 parser.add_argument('--data_dir', type=str, default='data',
                     help='测试图像目录路径')
@@ -553,19 +712,17 @@ with torch.no_grad():  # 禁用梯度计算以节省内存
         # 目的: 去除分割结果中的孤立噪点和小区域
         # 只保留最大的连通区域
         print("  - 后处理中...")
-        
-        time_start = time.time()  # 记录开始时间
         data_img[tmp_mask == 0] = 0  # 使用前景掩码过滤背景
         data_img = allFilter(data_img)
-        
- 
-        
+        data_img = labelRemian(data_img)
         coo_arr = labelFilter(data_img)
         data_img = medianFilter(data_img,coo_arr)
         
         time_end = time.time()  # 记录结束时间
         time_sum = time_end - time_start  # 计算的时间差为程序的执行时间，单位为秒/s
-        print(f"  后处理耗时: {time_sum:.2f}秒")
+        print(f"  推理耗时: {time_sum:.2f}秒")
+
+
         # ============ 步骤7: 保存最终结果 ============
         output_path = os.path.join(args.results_dir, 'label_' + ele)
         nib.Nifti1Image(data_img, affine).to_filename(output_path)
