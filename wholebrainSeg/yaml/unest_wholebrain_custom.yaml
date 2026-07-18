@@ -1,0 +1,59 @@
+# UNesT 全脑分割训练配置文件
+# 用于自定义数据集训练
+
+{
+    # ==================== 目录配置 ====================
+    'logdir': '/home/tenoke4090/B_WorkPath/mrqs/UNesT/wholebrainSeg/logs/wholebrain_custom',
+    'data_dir': '/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset',
+    'jsondir': '/home/tenoke4090/B_WorkPath/mrqs/wholebrainseg_dataset/json',
+    'use_pretrained': '',  # 预训练权重路径，留空表示从头训练
+    
+    # ==================== 交叉验证配置 ====================
+    'fold': 0,
+    
+    # ==================== 模型配置 ====================
+    'num_classes': 133,     # 分割类别数（132个脑区 + 背景）
+    'model_type': 'base',   # 模型规模: 'small', 'base', 'large'
+    'patch_size': 4,        # Patch大小
+    'depth': [2, 2, 8],     # Transformer各层深度
+    'embed_dims': [128, 256, 512],  # 各层嵌入维度
+    'num_heads': [4, 8, 16],        # 各层注意力头数
+    
+    # ==================== 训练配置 ====================
+    'num_steps': 50000,     # 总训练步数
+    'lr': 0.00001,          # 学习率
+    'decay': 0.00001,       # 权重衰减
+    'momentum': 0.9,        # SGD动量（仅SGD优化器使用）
+    'batch_size': 1,        # 批次大小（3D医学图像通常为1）
+    'warmup_steps': 0,      # 学习率warmup步数
+    
+    # ==================== 损失函数配置 ====================
+    'loss_type': 'dice_ce', # 损失类型: 'dice', 'ce', 'dice_ce', 'wce', 'dice_wce'
+    'weight_classes': [],   # 加权类别（用于wce和dice_wce）
+    
+    # ==================== 优化器配置 ====================
+    'opt': 'adamw',         # 优化器: 'adam', 'adamw', 'sgd'
+    'lrdecay': True,        # 是否使用学习率衰减
+    
+    # ==================== 网络结构配置 ====================
+    'conv_block': True,
+    'res_block': True,
+    'amp': False,           # 自动混合精度训练
+    
+    # ==================== ROI配置 ====================
+    'roi_x': 96,            # 训练ROI大小
+    'roi_y': 96,
+    'roi_z': 96,
+    'sw_batch_size': 1,     # 滑动窗口推理批次大小
+    
+    # ==================== 验证配置 ====================
+    'eval_num': 400,        # 每隔多少步验证一次
+    
+    # ==================== 数据增强配置 ====================
+    'aug_type': {
+        'flip': 0.01,           # 翻转概率
+        'rotate': 0.00,         # 旋转概率（可设为0.2启用）
+        'scale_intensity': 0.01, # 强度缩放概率
+        'shif_intensity': 0.01   # 强度偏移概率
+    }
+}

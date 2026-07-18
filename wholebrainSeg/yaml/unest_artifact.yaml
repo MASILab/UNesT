@@ -1,0 +1,21 @@
+# yaml/artifact_detection.yaml
+{
+  'task': 'classification',       # 改为分类任务
+  'num_classes': 7,               # 伪影类别数
+  'model_type': 'base',
+  'input_mode': '2D',             # 或 '3D'
+  
+  # 训练参数
+  'num_steps': 30000,
+  'lr': 0.0001,
+  'batch_size': 16,
+  'loss_type': 'focal',           # 或 'ce' + label_smoothing
+  
+  # 数据增强
+  'aug_intensity': True,
+  'aug_motion_blur': True,        # 模拟运动伪影
+  
+  # 数据路径
+  'data_dir': '/path/to/mri_artifacts',
+  'jsondir': '/path/to/splits',
+}

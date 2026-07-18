@@ -1,0 +1,13 @@
+antspyx==0.4.2
+intensity_normalization==2.2.4
+monai==1.2.0
+nibabel==3.2.2
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.11.4
+scikit-image==0.22.0
+pillow==10.0.1
+tensorboardX==2.2
+timm==0.9.16
+tqdm==4.65.0
+pyrobex==0.4.3
